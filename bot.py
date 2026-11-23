@@ -41,7 +41,7 @@ def main_inline_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     
     kb.button(text="اطلاع از جلسات آنلاین NA", url="https://nairan1.org/onlinemeeting/")
-    kb.button(text="شورای فرامنطقه ایران", url="https://nairan.org/")
+    kb.button(text="سایت شورای فرامنطقه ایران", url="https://nairan.org/")
     kb.button(text="شورای فرامنطقه APF", url="https://fa.apfna.org/")
     kb.button(text="شورای فرامنطقه EDM", url="https://www.edmna.org/")
     kb.button(text="ارتباط با کنفرانس خدمات جهانی NA", callback_data="global_services")
@@ -52,9 +52,9 @@ def main_inline_keyboard() -> InlineKeyboardBuilder:
 def email_inline_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     
+    # دکمه‌های ایمیل (فروشگاه حذف شده است)
     kb.button(text="اطلاعات عمومی و فلووشیپ", url="mailto:fsmail@na.org")
     kb.button(text="خدمات مشتری (سفارشات)", url="mailto:customer_service@na.org")
-    kb.button(text="فروشگاه آنلاین (پرداخت)", url="https://asan.shaparak.ir/")
     kb.button(text="هیئت جهانی (World Board)", url="mailto:worldboard@na.org")
     kb.button(text="منابع انسانی (HR)", url="mailto:hrp@na.org")
     kb.button(text="روابط عمومی (PR)", url="mailto:pr@na.org")
@@ -64,9 +64,12 @@ def email_inline_keyboard() -> InlineKeyboardBuilder:
     kb.button(text="مجله The NA Way", url="mailto:naway@na.org")
     kb.button(text="کمک‌های مالی", url="mailto:contributions@na.org")
     kb.button(text="فرصت‌های شغلی", url="mailto:jobs@na.org")
+    
+    # دکمه بازگشت
     kb.button(text="🔙 بازگشت به منوی اصلی", callback_data="back_to_main")
     
-    kb.adjust(2, 2, 2, 2, 2, 2, 1)
+    # چیدمان: ۱۱ دکمه بالا (۵ ردیف دو تایی و ۱ ردیف تک) + دکمه بازگشت
+    kb.adjust(2, 2, 2, 2, 2, 1, 1)
     return kb
 
 # ---------------------------------------------------------
@@ -74,7 +77,7 @@ def email_inline_keyboard() -> InlineKeyboardBuilder:
 # ---------------------------------------------------------
 @dp.message(CommandStart())
 async def start_handler(message: Message):
-    # پاک کردن کیبورد پایین صفحه (Reply Keyboard)
+    # پاک کردن کیبورد پایین صفحه (در صورت وجود)
     await message.answer("در حال بارگذاری منو...", reply_markup=ReplyKeyboardRemove())
     
     # ارسال پیام اصلی با دکمه‌های شیشه‌ای
