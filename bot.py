@@ -6,7 +6,7 @@ import asyncio
 from baleio import Bot, Dispatcher, F
 from baleio.filters import CommandStart
 from baleio.types import Message
-from baleio.utils import InlineKeyboardBuilder
+from baleio.utils import InlineKeyboardBuilder, ReplyKeyboardRemove
 
 def log(*args):
     print(*args, flush=True)
@@ -22,7 +22,7 @@ dp = Dispatcher()
 bot = Bot(token=TOKEN)
 
 # ---------------------------------------------------------
-# متن‌ها و لینک‌ها
+# متن‌ها
 # ---------------------------------------------------------
 WELCOME_TEXT = (
     "به مرکز خدمات و منابع انجمن معتادان گمنام NA خوش آمدید.\n"
@@ -40,27 +40,27 @@ EMAIL_TEXT = (
 def main_inline_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     
-    # ردیف اول: جلسات آنلاین
+    # ردیف اول
     kb.button(text="اطلاع از جلسات آنلاین NA", url="https://nairan1.org/onlinemeeting/")
     
-    # ردیف دوم: سایت ایران و APF
+    # ردیف دوم
     kb.button(text="سایت شورای فرامنطقه ایران", url="https://nairan.org/")
     kb.button(text="شورای فرامنطقه APF", url="https://fa.apfna.org/")
     
-    # ردیف سوم: EDM
+    # ردیف سوم
     kb.button(text="شورای فرامنطقه EDM", url="https://www.edmna.org/")
     
-    # ردیف چهارم: ارتباط با کنفرانس جهانی (این دکمه به صفحه ایمیل‌ها می‌رود)
+    # ردیف چهارم (دکمه باز کردن منوی ایمیل‌ها)
     kb.button(text="ارتباط با کنفرانس خدمات جهانی NA", callback_data="global_services")
     
-    # چیدمان: ردیف ۱ تک دکمه، ردیف ۲ دو دکمه، ردیف ۳ تک دکمه، ردیف ۴ تک دکمه
+    # چیدمان دکمه‌ها (۱، ۲، ۱، ۱)
     kb.adjust(1, 2, 1, 1)
     return kb
 
 def email_inline_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     
-    # دکمه‌های ایمیل با لینک mailto
+    # دکمه‌های ایمیل
     kb.button(text="اطلاعات عمومی و فلووشیپ", url="mailto:fsmail@na.org")
     kb.button(text="خدمات مشتری (سفارشات)", url="mailto:customer_service@na.org")
     kb.button(text="فروشگاه آنلاین (پرداخت)", url="https://asan.shaparak.ir/")
@@ -77,8 +77,7 @@ def email_inline_keyboard() -> InlineKeyboardBuilder:
     # دکمه بازگشت
     kb.button(text="🔙 بازگشت به منوی اصلی", callback_data="back_to_main")
     
-    # چیدمان: دکمه‌ها را دو تا دو تا در هر ردیف بچین، اما دکمه بازگشت را تک بگذار
-    # ۱۲ دکمه اول دو تایی، سپس یک دکمه بازگشت
+    # چیدمان (دو ستونه، و دکمه بازگشت تک در پایین)
     kb.adjust(2, 2, 2, 2, 2, 2, 1)
     return kb
 
@@ -87,15 +86,19 @@ def email_inline_keyboard() -> InlineKeyboardBuilder:
 # ---------------------------------------------------------
 @dp.message(CommandStart())
 async def start_handler(message: Message):
+    # ۱. اول کیبورد پایین صفحه (اگر هست) را پاک می‌کنیم
+    await message.answer("در حال بارگذاری منو...", reply_markup=ReplyKeyboardRemove())
+    
+    # ۲. سپس پیام اصلی با دکمه‌های شیشه‌ای را می‌فرستیم
     await message.answer(WELCOME_TEXT, reply_markup=main_inline_keyboard().as_markup())
 
-# هندلر برای دکمه شیشه‌ای "ارتباط با کنفرانس جهانی"
+# هندلر برای کلیک روی دکمه "ارتباط با کنفرانس جهانی"
 @dp.callback_query(F.data == "global_services")
 async def global_services_handler(callback):
     await callback.message.edit_text(EMAIL_TEXT, reply_markup=email_inline_keyboard().as_markup())
     await callback.answer()
 
-# هندلر برای دکمه شیشه‌ای "بازگشت"
+# هندلر برای کلیک روی دکمه "بازگشت"
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main_handler(callback):
     await callback.message.edit_text(WELCOME_TEXT, reply_markup=main_inline_keyboard().as_markup())
