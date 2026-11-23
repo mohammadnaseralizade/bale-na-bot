@@ -3,11 +3,10 @@ import sys
 import traceback
 import asyncio
 
-# وارد کردن کتابخانه baleio مخصوص بله
-from baleio import Bot, Dispatcher
+from baleio import Bot, Dispatcher, F
 from baleio.filters import CommandStart
 from baleio.types import Message
-from baleio.utils import keyboard as kb
+from baleio.utils import InlineKeyboardBuilder
 
 def log(*args):
     print(*args, flush=True)
@@ -19,41 +18,12 @@ if not TOKEN:
     log("❌ خطا: متغیر محیطی BOT_TOKEN تنظیم نشده است.")
     sys.exit(1)
 
-# تنظیمات اولیه
 dp = Dispatcher()
 bot = Bot(token=TOKEN)
 
 # ---------------------------------------------------------
-# متن دکمه‌ها
+# متن‌ها و لینک‌ها
 # ---------------------------------------------------------
-B_ONLINE = "اطلاع از جلسات آنلاین NA"
-B_IRAN = "سایت شورای فرامنطقه ایران"
-B_APF = "شورای فرامنطقه APF"
-B_EDM = "شورای فرامنطقه EDM"
-B_GLOBAL = "ارتباط با کنفرانس خدمات جهانی NA"
-B_BACK = "بازگشت به منوی اصلی"
-
-SITES = {
-    B_ONLINE: ("جلسات آنلاین NA", "https://nairan1.org/onlinemeeting/"),
-    B_IRAN: ("سایت شورای فرامنطقه ایران", "https://nairan.org/"),
-    B_APF: ("شورای فرامنطقه APF", "https://fa.apfna.org/"),
-    B_EDM: ("شورای فرامنطقه EDM", "https://www.edmna.org/"),
-}
-
-EMAILS = {
-    "اطلاعات عمومی و فلووشیپ": "fsmail@na.org",
-    "خدمات مشتری (سفارشات)": "customer_service@na.org",
-    "هیئت جهانی (World Board)": "worldboard@na.org",
-    "منابع انسانی (HR)": "hrp@na.org",
-    "روابط عمومی (PR)": "pr@na.org",
-    "بیمارستان‌ها و موسسات (H&I)": "handi@na.org",
-    "وب‌سایت (Webmaster)": "webmaster@na.org",
-    "رویدادها و کنوانسیون‌ها": "events@na.org",
-    "مجله The NA Way": "naway@na.org",
-    "کمک‌های مالی": "contributions@na.org",
-    "فرصت‌های شغلی": "jobs@na.org",
-}
-
 WELCOME_TEXT = (
     "به مرکز خدمات و منابع انجمن معتادان گمنام NA خوش آمدید.\n"
     "لطفاً یکی از گزینه‌های زیر را انتخاب کنید:"
@@ -61,73 +31,82 @@ WELCOME_TEXT = (
 
 EMAIL_TEXT = (
     "بخش‌های ارتباطی خدمات جهانی NA\n"
-    "روی هر دکمه بزنید تا آدرس ایمیل آن بخش برای شما ارسال شود."
+    "روی هر دکمه بزنید تا مستقیماً برای آن بخش ایمیل بفرستید."
 )
 
 # ---------------------------------------------------------
-# ساخت کیبوردهای بله (Reply Keyboard)
+# ساخت دکمه‌های شیشه‌ای (Inline)
 # ---------------------------------------------------------
-def main_keyboard() -> kb.ReplyKeyboardMarkup:
-    # در بله دکمه‌ها معمولاً در حداکثر ۲ یا ۳ ستون چیده می‌شوند
-    return kb.ReplyKeyboardMarkup(
-        keyboard=[
-            [kb.KeyboardButton(text=B_ONLINE)],
-            [kb.KeyboardButton(text=B_IRAN), kb.KeyboardButton(text=B_APF)],
-            [kb.KeyboardButton(text=B_EDM)],
-            [kb.KeyboardButton(text=B_GLOBAL)],
-        ],
-        resize_keyboard=True
-    )
+def main_inline_keyboard() -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    
+    # ردیف اول: جلسات آنلاین
+    kb.button(text="اطلاع از جلسات آنلاین NA", url="https://nairan1.org/onlinemeeting/")
+    
+    # ردیف دوم: سایت ایران و APF
+    kb.button(text="سایت شورای فرامنطقه ایران", url="https://nairan.org/")
+    kb.button(text="شورای فرامنطقه APF", url="https://fa.apfna.org/")
+    
+    # ردیف سوم: EDM
+    kb.button(text="شورای فرامنطقه EDM", url="https://www.edmna.org/")
+    
+    # ردیف چهارم: ارتباط با کنفرانس جهانی (این دکمه به صفحه ایمیل‌ها می‌رود)
+    kb.button(text="ارتباط با کنفرانس خدمات جهانی NA", callback_data="global_services")
+    
+    # چیدمان: ردیف ۱ تک دکمه، ردیف ۲ دو دکمه، ردیف ۳ تک دکمه، ردیف ۴ تک دکمه
+    kb.adjust(1, 2, 1, 1)
+    return kb
 
-def email_keyboard() -> kb.ReplyKeyboardMarkup:
-    names = list(EMAILS.keys())
-    rows = []
-    # چیدن دکمه‌های ایمیل در دو ستون
-    for i in range(0, len(names), 2):
-        row = [kb.KeyboardButton(text=n) for n in names[i:i + 2]]
-        rows.append(row)
-    rows.append([kb.KeyboardButton(text=B_BACK)])
-    return kb.ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+def email_inline_keyboard() -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    
+    # دکمه‌های ایمیل با لینک mailto
+    kb.button(text="اطلاعات عمومی و فلووشیپ", url="mailto:fsmail@na.org")
+    kb.button(text="خدمات مشتری (سفارشات)", url="mailto:customer_service@na.org")
+    kb.button(text="فروشگاه آنلاین (پرداخت)", url="https://asan.shaparak.ir/")
+    kb.button(text="هیئت جهانی (World Board)", url="mailto:worldboard@na.org")
+    kb.button(text="منابع انسانی (HR)", url="mailto:hrp@na.org")
+    kb.button(text="روابط عمومی (PR)", url="mailto:pr@na.org")
+    kb.button(text="بیمارستان‌ها و موسسات (H&I)", url="mailto:handi@na.org")
+    kb.button(text="وب‌سایت (Webmaster)", url="mailto:webmaster@na.org")
+    kb.button(text="رویدادها و کنوانسیون‌ها", url="mailto:events@na.org")
+    kb.button(text="مجله The NA Way", url="mailto:naway@na.org")
+    kb.button(text="کمک‌های مالی", url="mailto:contributions@na.org")
+    kb.button(text="فرصت‌های شغلی", url="mailto:jobs@na.org")
+    
+    # دکمه بازگشت
+    kb.button(text="🔙 بازگشت به منوی اصلی", callback_data="back_to_main")
+    
+    # چیدمان: دکمه‌ها را دو تا دو تا در هر ردیف بچین، اما دکمه بازگشت را تک بگذار
+    # ۱۲ دکمه اول دو تایی، سپس یک دکمه بازگشت
+    kb.adjust(2, 2, 2, 2, 2, 2, 1)
+    return kb
 
 # ---------------------------------------------------------
 # هندلرها
 # ---------------------------------------------------------
 @dp.message(CommandStart())
 async def start_handler(message: Message):
-    await message.answer(WELCOME_TEXT, reply_markup=main_keyboard())
+    await message.answer(WELCOME_TEXT, reply_markup=main_inline_keyboard().as_markup())
 
-# هندلر برای دکمه‌های کیبورد (مسیریاب متن)
-@dp.message()
-async def router(message: Message):
-    text = message.text.strip() if message.text else ""
+# هندلر برای دکمه شیشه‌ای "ارتباط با کنفرانس جهانی"
+@dp.callback_query(F.data == "global_services")
+async def global_services_handler(callback):
+    await callback.message.edit_text(EMAIL_TEXT, reply_markup=email_inline_keyboard().as_markup())
+    await callback.answer()
 
-    if not text or text.startswith("/"):
-        return
-
-    if text == B_GLOBAL:
-        await message.answer(EMAIL_TEXT, reply_markup=email_keyboard())
-    elif text == B_BACK:
-        await message.answer(WELCOME_TEXT, reply_markup=main_keyboard())
-    elif text in SITES:
-        title, url = SITES[text]
-        await message.answer(f"{title}\n{url}")
-    elif text in EMAILS:
-        email = EMAILS[text]
-        await message.answer(
-            f"{text}\n📧 {email}\n\n"
-            f"نوشتن ایمیل (با جیمیل):\n"
-            f"https://mail.google.com/mail/?view=cm&to={email}"
-        )
-    else:
-        await message.answer(WELCOME_TEXT, reply_markup=main_keyboard())
+# هندلر برای دکمه شیشه‌ای "بازگشت"
+@dp.callback_query(F.data == "back_to_main")
+async def back_to_main_handler(callback):
+    await callback.message.edit_text(WELCOME_TEXT, reply_markup=main_inline_keyboard().as_markup())
+    await callback.answer()
 
 # ---------------------------------------------------------
 # اجرا
 # ---------------------------------------------------------
 async def main():
-    log("✅ ربات بله در حال اجراست...")
+    log("✅ ربات بله با دکمه‌های شیشه‌ای در حال اجراست...")
     try:
-        # اجرای ربات به صورت polling
         await dp.start_polling(bot)
     except Exception:
         log("❌ خطا در اجرای ربات بله:")
