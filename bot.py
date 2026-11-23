@@ -41,7 +41,7 @@ def main_inline_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     
     kb.button(text="اطلاع از جلسات آنلاین NA", url="https://nairan1.org/onlinemeeting/")
-    kb.button(text="سایت شورای فرامنطقه ایران", url="https://nairan.org/")
+    kb.button(text="شورای فرامنطقه ایران", url="https://nairan.org/")
     kb.button(text="شورای فرامنطقه APF", url="https://fa.apfna.org/")
     kb.button(text="شورای فرامنطقه EDM", url="https://www.edmna.org/")
     kb.button(text="ارتباط با کنفرانس خدمات جهانی NA", callback_data="global_services")
