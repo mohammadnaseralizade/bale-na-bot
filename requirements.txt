@@ -1,3 +1,5 @@
 baleio
 jdatetime
 openai
+httpx
+beautifulsoup4
