@@ -610,11 +610,16 @@ ONLINE_EXCLUDE_WORDS = [w.strip() for w in os.getenv(
 # اختیاری: اگر پر شود، فقط عنوان‌هایی که یکی از این کلمات را دارند نمایش داده می‌شوند (مثلاً: گروه)
 ONLINE_INCLUDE_WORDS = [w.strip() for w in os.getenv("ONLINE_INCLUDE_WORDS", "").split(",") if w.strip()]
 
+def _squash(s: str) -> str:
+    """حذف هر نوع فاصله و کاراکتر نامرئی (نیم‌فاصله، NBSP، اعراب و ...) برای مقایسه مطمئن."""
+    s = (s or "").replace("ي", "ی").replace("ك", "ک").replace("ة", "ه")
+    return re.sub(r"[\s\u200b-\u200f\u202a-\u202e\u00a0\u064b-\u065f\u0640]+", "", s)
+
 def is_recovery_group(title: str) -> bool:
-    t = _norm_fa(title)
-    if any(_norm_fa(w) in t for w in ONLINE_EXCLUDE_WORDS):
+    t = _squash(title)
+    if any(_squash(w) in t for w in ONLINE_EXCLUDE_WORDS):
         return False
-    if ONLINE_INCLUDE_WORDS and not any(_norm_fa(w) in t for w in ONLINE_INCLUDE_WORDS):
+    if ONLINE_INCLUDE_WORDS and not any(_squash(w) in t for w in ONLINE_INCLUDE_WORDS):
         return False
     return True
 
