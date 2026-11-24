@@ -32,6 +32,10 @@ AI_TTS_VOICE = os.getenv("AI_TTS_VOICE", "nova")
 JFT_URL = os.getenv("JFT_URL", "https://jft.nairan1.org/")
 JFT_SELECTOR = os.getenv("JFT_SELECTOR", "")   # اختیاری: سلکتور CSS بخش متن در سایت
 JFT_CACHE_SECONDS = int(os.getenv("JFT_CACHE_SECONDS", "1800"))
+ONLINE_URL = os.getenv("ONLINE_URL", "https://nairan1.org/onlinemeeting/")
+ONLINE_SELECTOR = os.getenv("ONLINE_SELECTOR", "")   # اختیاری: سلکتور CSS بخش لیست جلسات
+ONLINE_CACHE_SECONDS = int(os.getenv("ONLINE_CACHE_SECONDS", "600"))
+ONLINE_MAX_CHARS = int(os.getenv("ONLINE_MAX_CHARS", "8000"))
 MAX_VOICE_SECONDS = int(os.getenv("MAX_VOICE_SECONDS", "60"))
 MAX_VOICE_BYTES = int(os.getenv("MAX_VOICE_BYTES", str(2 * 1024 * 1024)))
 
@@ -165,7 +169,7 @@ SYSTEM_PROMPT = (
 def main_inline_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     # دکمه‌های لینک‌دار: مستقیم لینک را باز می‌کنند
-    kb.button(text="💻 اطلاع از جلسات آنلاین", url="https://nairan1.org/onlinemeeting/")
+    kb.button(text="💻 اطلاع از جلسات آنلاین", callback_data="menu_online")
     kb.button(text="🔍 جستجوی جلسات حضوری", url="https://nairan.org/fa/meetings")
     kb.button(text="📊 روزشمار پاکی", url="https://nairan.org/fa/cleanlinesscalendar")
     kb.button(text="🌿 پیام امید امروز", callback_data="menu_jft")
@@ -427,6 +431,120 @@ async def test_jft_handler(message: Message):
     _jft_cache["text"] = None
     try:
         text = await fetch_jft()
+        await message.answer(f"✅ {len(text)} کاراکتر دریافت شد.\n\n{text[:1500]}")
+    except Exception as e:
+        await message.answer(f"❌ خطا: {type(e).__name__}: {e}"[:3500])
+
+# ----- جلسات آنلاین (دریافت مستقیم از سایت) -----
+_online_cache = {"text": None, "time": 0.0}
+
+def extract_online(html: str) -> str:
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        BeautifulSoup = None
+    if BeautifulSoup is None:
+        text = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\1>", "", html)
+        text = re.sub(r"(?s)<br\s*/?>|</p>|</div>|</tr>|</li>|</h\d>", "\n", text)
+        text = re.sub(r"(?s)<[^>]+>", " ", text)
+        import html as _html
+        return _clean_text(_html.unescape(text))
+
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript", "nav", "header", "footer", "form", "button", "svg", "select"]):
+        tag.decompose()
+    root = None
+    if ONLINE_SELECTOR:
+        root = soup.select_one(ONLINE_SELECTOR)
+    if root is None:
+        root = soup.find("main") or soup.body or soup
+
+    # هر ردیف جدول -> یک خط
+    for tr in root.find_all("tr"):
+        cells = [c.get_text(" ", strip=True) for c in tr.find_all(["th", "td"])]
+        cells = [c for c in cells if c]
+        tr.replace_with("\n• " + " | ".join(cells) + "\n")
+    # هر آیتم لیست -> یک خط
+    for li in root.find_all("li"):
+        t = li.get_text(" ", strip=True)
+        if t:
+            li.replace_with("\n• " + t + "\n")
+    text = root.get_text("\n", strip=True)
+    return _clean_text(text)
+
+def split_text(text: str, limit: int = 3500):
+    chunks, cur = [], ""
+    for line in text.split("\n"):
+        if len(cur) + len(line) + 1 > limit and cur:
+            chunks.append(cur.strip())
+            cur = ""
+        cur += line + "\n"
+    if cur.strip():
+        chunks.append(cur.strip())
+    return chunks
+
+async def fetch_online() -> str:
+    now = time.time()
+    if _online_cache["text"] and now - _online_cache["time"] < ONLINE_CACHE_SECONDS:
+        return _online_cache["text"]
+    import httpx
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+        resp = await client.get(ONLINE_URL, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        html_text = resp.text
+        text = extract_online(html_text)
+    if len(text) < 80:
+        api_hints = sorted(set(re.findall(r"""["'](/?[\w\-./]*api[\w\-./?=&]*)["']""", html_text)))[:8]
+        scripts = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html_text)[:6]
+        raise ValueError(
+            f"لیست کافی استخراج نشد | status={resp.status_code} | html_len={len(html_text)} | "
+            f"text_len={len(text)} | api_hints={api_hints} | scripts={scripts}"
+        )
+    _online_cache["text"] = text
+    _online_cache["time"] = now
+    return text
+
+@dp.callback_query(F.data == "menu_online")
+async def online_handler(callback: CallbackQuery):
+    await callback.answer()
+    try:
+        text = await fetch_online()
+        truncated = len(text) > ONLINE_MAX_CHARS
+        if truncated:
+            text = text[:ONLINE_MAX_CHARS].rsplit("\n", 1)[0]
+        chunks = split_text("💻 جلسات آنلاین\n\n" + text)
+        for i, chunk in enumerate(chunks):
+            is_last = i == len(chunks) - 1
+            if is_last and truncated:
+                kb = InlineKeyboardBuilder()
+                kb.button(text="🌐 مشاهده لیست کامل", url=ONLINE_URL)
+                kb.button(text="🔙 بازگشت به منوی اصلی", callback_data="back_to_main")
+                kb.adjust(1)
+                await callback.message.answer(chunk, reply_markup=kb.as_markup())
+            elif is_last:
+                await callback.message.answer(chunk, reply_markup=jft_markup())
+            else:
+                await callback.message.answer(chunk)
+    except Exception as e:
+        log(f"Online meetings error: {e!r}")
+        traceback.print_exc()
+        if ADMIN_ID:
+            try:
+                await bot.send_message(chat_id=int(ADMIN_ID), text=f"🛠 خطای جلسات آنلاین:\n{type(e).__name__}: {e}"[:3500])
+            except Exception:
+                pass
+        await callback.message.answer(
+            "⚠️ الان نتوانستم لیست جلسات آنلاین را دریافت کنم. لطفاً چند دقیقه بعد دوباره تلاش کنید.",
+            reply_markup=jft_markup()
+        )
+
+@dp.message(Command("testonline"))
+async def test_online_handler(message: Message):
+    if not message.from_user or str(message.from_user.id) != str(ADMIN_ID):
+        return
+    _online_cache["text"] = None
+    try:
+        text = await fetch_online()
         await message.answer(f"✅ {len(text)} کاراکتر دریافت شد.\n\n{text[:1500]}")
     except Exception as e:
         await message.answer(f"❌ خطا: {type(e).__name__}: {e}"[:3500])
