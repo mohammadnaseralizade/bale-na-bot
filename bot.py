@@ -597,22 +597,173 @@ def split_text(text: str, limit: int = 3500):
         chunks.append(cur.strip())
     return chunks
 
+from urllib.parse import urljoin, urlparse
+
+ONLINE_LINK_SELECTOR = os.getenv("ONLINE_LINK_SELECTOR", "")   # اختیاری: سلکتور CSS لینک‌های جلسات در صفحه لیست
+ONLINE_MAX_PAGES = int(os.getenv("ONLINE_MAX_PAGES", "60"))     # حداکثر تعداد صفحه جلسه که بررسی می‌شود
+
+ZOOM_URL_RE = re.compile(r"https?://[^\s\"'<>]*zoom\.(?:us|com)[^\s\"'<>]*", re.I)
+SKIP_PATH_PARTS = ("/category/", "/author/", "/tag/", "/page/", "/wp-", "/feed", "/search", "/comments")
+SKIP_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf", ".zip", ".mp3", ".mp4")
+
+def _host(u: str) -> str:
+    return urlparse(u).netloc.lower().replace("www.", "")
+
+def extract_detail_links(html: str):
+    """لینک صفحه‌های تک‌تک جلسات را از صفحه لیست درمی‌آورد."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript", "nav", "header", "footer", "form", "svg", "select"]):
+        tag.decompose()
+    if ONLINE_LINK_SELECTOR:
+        anchors = [x for x in soup.select(ONLINE_LINK_SELECTOR) if x.get("href")]
+    else:
+        root = None
+        if ONLINE_SELECTOR:
+            root = soup.select_one(ONLINE_SELECTOR)
+        if root is None:
+            root = soup.find("main") or soup.body or soup
+        anchors = root.find_all("a", href=True)
+
+    base_path = urlparse(ONLINE_URL).path.rstrip("/")
+    out, seen = [], set()
+    for a in anchors:
+        href = (a["href"] or "").strip()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+        full = urljoin(ONLINE_URL, href).split("#")[0]
+        p = urlparse(full)
+        if p.scheme not in ("http", "https") or _host(full) != _host(ONLINE_URL):
+            continue
+        path = p.path.lower()
+        if path.rstrip("/") in ("", base_path.lower()):
+            continue
+        if any(s in path for s in SKIP_PATH_PARTS) or "?s=" in full or path.endswith(SKIP_EXT):
+            continue
+        if full in seen:
+            continue
+        seen.add(full)
+        out.append(full)
+    return out[:ONLINE_MAX_PAGES]
+
+def parse_meeting_page(html: str, url: str):
+    """از صفحه یک جلسه، متن آماده نمایش و لینک Zoom را برمی‌گرداند؛ اگر Zoom نداشت None."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+
+    # عنوان را قبل از حذف تگ‌ها برمی‌داریم
+    title = ""
+    h1 = soup.find("h1")
+    if h1:
+        title = h1.get_text(" ", strip=True)
+    if not title and soup.title:
+        title = re.split(r"[|–—-]", soup.title.get_text(" ", strip=True))[0].strip()
+
+    for tag in soup(["script", "style", "noscript", "nav", "form", "svg", "select", "aside", "footer"]):
+        tag.decompose()
+    root = soup.select_one(".entry-content, .post-content, article, main") or soup.body or soup
+
+    zoom = ""
+    for a in root.find_all("a", href=True):
+        h = a["href"].strip()
+        if h.lower().startswith(("http://", "https://")) and ZOOM_RE.search(h):
+            zoom = h
+            break
+    if not zoom:
+        m = ZOOM_URL_RE.search(root.get_text(" ", strip=True))
+        if m:
+            zoom = m.group(0)
+    if not zoom:
+        return None
+
+    lines = [re.sub(r"\s+", " ", ln).strip() for ln in root.get_text("\n", strip=True).splitlines() if ln.strip()]
+    lines = [ln for ln in lines if not ln.lower().startswith("http")]
+
+    def parse_label(line: str):
+        m = LABEL_RE.match(line)
+        if not m or m.group(2).startswith("//"):
+            return None
+        return m.group(1).strip(), m.group(2).strip()
+
+    def is_schedule(line: str) -> bool:
+        n = _norm_fa(line)
+        return any(_norm_fa(d) in n for d in DAY_WORDS) or bool(TIME_RE.search(n))
+
+    fields, extra = [], []
+    i = 0
+    while i < len(lines):
+        parsed = parse_label(lines[i])
+        if parsed:
+            label, value = parsed
+            if not value and i + 1 < len(lines) and parse_label(lines[i + 1]) is None:
+                value = lines[i + 1]
+                i += 1
+            fields.append((label, value))
+        elif is_schedule(lines[i]) and len(lines[i]) <= 80 and lines[i] != title and lines[i] not in extra:
+            extra.append(lines[i])
+        i += 1
+
+    item = f"🔹 {title or 'جلسه آنلاین'}"
+    for ln in extra:
+        item += f"\n🗓 {ln}"
+    for label, value in fields:
+        if "لینک" in label or _norm_fa(value).strip() in EMPTY_VALUES:
+            continue
+        item += f"\n{_field_icon(label)} {label} : {value}"
+    item += f"\n🔗 لینک : {zoom}"
+    return item, zoom
+
 async def fetch_online() -> str:
     now = time.time()
     if _online_cache["text"] and now - _online_cache["time"] < ONLINE_CACHE_SECONDS:
         return _online_cache["text"]
     import httpx
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
-        resp = await client.get(ONLINE_URL, headers={"User-Agent": "Mozilla/5.0"})
+    links, fetched, no_zoom = [], 0, 0
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}) as client:
+        resp = await client.get(ONLINE_URL)
         resp.raise_for_status()
         html_text = resp.text
+        status = resp.status_code
+
+        # حالت ۱: خود صفحه لیست، لینک Zoom دارد
         text = extract_online_groups(html_text)
+
+        # حالت ۲: لینک Zoom داخل صفحه هر جلسه است
+        if len(text) < 20:
+            links = extract_detail_links(html_text)
+            sem = asyncio.Semaphore(5)
+
+            async def one(u):
+                async with sem:
+                    try:
+                        r = await client.get(u)
+                        r.raise_for_status()
+                        return parse_meeting_page(r.text, u)
+                    except Exception as e:
+                        log(f"Meeting page error {u}: {e!r}")
+                        return False
+
+            results = await asyncio.gather(*(one(u) for u in links))
+            items, seen_zoom = [], set()
+            for r in results:
+                if r is False:
+                    continue
+                fetched += 1
+                if r is None:
+                    no_zoom += 1
+                    continue
+                item, zoom = r
+                if zoom in seen_zoom:
+                    continue
+                seen_zoom.add(zoom)
+                items.append(item)
+            text = "\n\n".join(items)
+
     if len(text) < 20:
-        api_hints = sorted(set(re.findall(r"""["'](/?[\w\-./]*api[\w\-./?=&]*)["']""", html_text)))[:8]
-        scripts = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html_text)[:6]
         raise ValueError(
-            f"گروهی با لینک Zoom پیدا نشد | status={resp.status_code} | html_len={len(html_text)} | "
-            f"text_len={len(text)} | api_hints={api_hints} | scripts={scripts}"
+            f"جلسه‌ای با لینک Zoom پیدا نشد | status={status} | html_len={len(html_text)} | "
+            f"detail_links={len(links)} | pages_ok={fetched} | pages_without_zoom={no_zoom} | "
+            f"sample_links={links[:5]}"
         )
     _online_cache["text"] = text
     _online_cache["time"] = now
