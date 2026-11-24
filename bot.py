@@ -3,6 +3,8 @@ import sys
 import traceback
 import asyncio
 import sqlite3
+import io
+import tempfile
 
 from baleio import Bot, Dispatcher, F
 from baleio.filters import CommandStart, Command
@@ -21,6 +23,11 @@ TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
 AI_API_KEY = os.getenv("AI_API_KEY")
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.avalai.ir/v1")
+AI_CHAT_MODEL = os.getenv("AI_CHAT_MODEL", "gpt-4o-mini")
+AI_STT_MODEL = os.getenv("AI_STT_MODEL", "whisper-1")   # تبدیل ویس به متن
+AI_TTS_MODEL = os.getenv("AI_TTS_MODEL", "tts-1")       # تبدیل متن به ویس
+AI_TTS_VOICE = os.getenv("AI_TTS_VOICE", "nova")
+MAX_VOICE_SECONDS = int(os.getenv("MAX_VOICE_SECONDS", "60"))
 
 if not TOKEN:
     log("❌ خطا: متغیر محیطی BOT_TOKEN تنظیم نشده است.")
@@ -297,10 +304,102 @@ async def ai_menu_handler(callback: CallbackQuery):
     await callback.message.answer(
         "🤖 **دستیار هوشمند NA در خدمت شماست.**\n\n"
         "می‌توانید سوالات خود را درباره انجمن، مسیر بهبودی یا جلسات بپرسید. من اینجا هستم تا با هم صحبت کنیم.\n\n"
+        "🎙 هم می‌توانید متن بنویسید و هم ویس بفرستید؛ اگر ویس بفرستید، به صورت صوتی هم جواب می‌دهم.\n\n"
         "⚠️ **توجه:** برای حفظ حریم خصوصی، لطفاً نام، شماره تماس یا آدرس خود را برای من نفرستید.\n"
         "برای خروج از این بخش، دستور /start را بزنید."
     )
     await callback.answer()
+
+# ----- توابع کمکی هوش مصنوعی و صوت -----
+async def ask_ai(user_id: int, text: str) -> str:
+    history = ai_chat_history.setdefault(user_id, [{"role": "system", "content": SYSTEM_PROMPT}])
+    history.append({"role": "user", "content": text})
+    if len(history) > 11:
+        history[:] = [history[0]] + history[-10:]
+    response = await ai_client.chat.completions.create(
+        model=AI_CHAT_MODEL,
+        messages=history,
+        max_tokens=500,
+        temperature=0.7
+    )
+    reply = response.choices[0].message.content
+    history.append({"role": "assistant", "content": reply})
+    return reply
+
+async def voice_to_text(file_bytes: bytes) -> str:
+    result = await ai_client.audio.transcriptions.create(
+        model=AI_STT_MODEL,
+        file=("voice.ogg", file_bytes),
+        language="fa",
+    )
+    return (result.text or "").strip()
+
+async def text_to_voice(text: str) -> bytes:
+    response = await ai_client.audio.speech.create(
+        model=AI_TTS_MODEL,
+        voice=AI_TTS_VOICE,
+        input=text[:1500],
+        response_format="opus",   # ogg/opus، مناسب برای ویس
+    )
+    return response.content
+
+async def send_voice_reply(message: Message, audio_bytes: bytes):
+    try:
+        from baleio.types import BufferedInputFile
+        await message.answer_voice(voice=BufferedInputFile(audio_bytes, filename="reply.ogg"))
+    except ImportError:
+        from baleio.types import FSInputFile
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
+            f.write(audio_bytes)
+            path = f.name
+        try:
+            await message.answer_voice(voice=FSInputFile(path))
+        finally:
+            os.remove(path)
+
+@dp.message(F.voice)
+async def handle_voice(message: Message):
+    user = message.from_user
+    if not user:
+        return
+    if user_states.get(user.id) != "waiting_for_ai":
+        await message.answer("🎙 برای گفتگوی صوتی، اول از منو دکمه «🤖 گفتگوی هوشمند» را بزنید.", reply_markup=main_markup())
+        return
+    if ai_client is None:
+        await message.answer("⚠️ سرویس هوش مصنوعی در حال حاضر غیرفعال است.")
+        return
+    if message.voice.duration and message.voice.duration > MAX_VOICE_SECONDS:
+        await message.answer(f"⚠️ لطفاً ویس کوتاه‌تر از {MAX_VOICE_SECONDS} ثانیه بفرستید.")
+        return
+
+    try:
+        # 1) دانلود ویس
+        file = await bot.get_file(message.voice.file_id)
+        buf = io.BytesIO()
+        await bot.download_file(file.file_path, buf)
+
+        # 2) ویس -> متن
+        user_text = await voice_to_text(buf.getvalue())
+        if not user_text:
+            await message.answer("🎙 متوجه صدا نشدم، لطفاً دوباره و واضح‌تر بفرستید.")
+            return
+
+        # 3) پاسخ هوش مصنوعی
+        ai_reply = await ask_ai(user.id, user_text)
+    except Exception as e:
+        log(f"Voice AI Error: {e}")
+        traceback.print_exc()
+        await message.answer("❌ متاسفانه نتوانستم ویس را پردازش کنم. لطفاً بعداً تلاش کنید یا پیام متنی بفرستید.")
+        return
+
+    # 4) متن پاسخ + ویس پاسخ
+    await message.answer(ai_reply)
+    try:
+        audio = await text_to_voice(ai_reply)
+        await send_voice_reply(message, audio)
+    except Exception as e:
+        log(f"TTS Error: {e}")
+        traceback.print_exc()
 
 # ----- هندلر اصلی برای دریافت متن‌ها (باید آخرین هندلر پیام باشد) -----
 @dp.message(F.text & ~F.text.startswith('/'))
@@ -340,26 +439,13 @@ async def handle_text_inputs(message: Message):
             await message.answer("❌ خطا در ارسال پیام. لطفاً بعداً تلاش کنید.", reply_markup=main_markup())
         return
 
-    # 2. گفتگو با هوش مصنوعی
+    # 2. گفتگو با هوش مصنوعی (متنی)
     if state == "waiting_for_ai":
         if ai_client is None:
             await message.answer("⚠️ سرویس هوش مصنوعی در حال حاضر غیرفعال است.")
             return
         try:
-            history = ai_chat_history.setdefault(user_id, [{"role": "system", "content": SYSTEM_PROMPT}])
-            history.append({"role": "user", "content": message.text})
-            if len(history) > 11:
-                history[:] = [history[0]] + history[-10:]
-
-            response = await ai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=history,
-                max_tokens=500,
-                temperature=0.7
-            )
-            ai_reply = response.choices[0].message.content
-            history.append({"role": "assistant", "content": ai_reply})
-
+            ai_reply = await ask_ai(user_id, message.text)
             await message.answer(ai_reply)
         except Exception as e:
             log(f"AI Error: {e}")
