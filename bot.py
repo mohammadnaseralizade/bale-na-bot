@@ -352,6 +352,21 @@ def extract_jft(html: str) -> str:
         text = "\n\n".join(ln for ln in lines if len(ln) >= 20)
     return _clean_text(text)
 
+def pick_jft(text: str) -> str:
+    """فقط بخش پایانی «فقط برای امروز : ...» را برمی‌گرداند و حقوق سایت را حذف می‌کند."""
+    t = text.replace("ي", "ی").replace("ك", "ک")
+    matches = list(re.finditer(r"فقط\s*برای\s*امروز\s*[:：]", t))
+    if not matches:
+        return ""
+    t = t[matches[-1].start():]
+    # حذف بخش حقوق سایت و هر چیز بعد از آن
+    for marker in ("©", "تمامی حقوق", "تمام حقوق", "حقوق این سایت", "حقوق اين سايت"):
+        idx = t.find(marker)
+        if idx != -1:
+            t = t[:idx]
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
 async def fetch_jft() -> str:
     now = time.time()
     if _jft_cache["text"] and now - _jft_cache["time"] < JFT_CACHE_SECONDS:
@@ -362,7 +377,7 @@ async def fetch_jft() -> str:
         resp.raise_for_status()
         resp.encoding = resp.encoding or "utf-8"
         html_text = resp.text
-        text = extract_jft(html_text)
+        text = pick_jft(extract_jft(html_text))
     if len(text) < 40:
         api_hints = sorted(set(re.findall(r"""["'](/?[\w\-./]*api[\w\-./?=&]*)["']""", html_text)))[:8]
         scripts = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html_text)[:6]
@@ -386,7 +401,7 @@ async def jft_handler(callback: CallbackQuery):
     await callback.answer()
     try:
         text = await fetch_jft()
-        await callback.message.answer("🌿 پیام امید امروز (فقط برای امروز)\n\n" + text, reply_markup=jft_markup())
+        await callback.message.answer("🌿 پیام امید امروز\n\n" + text, reply_markup=jft_markup())
     except Exception as e:
         log(f"JFT error: {e!r}")
         traceback.print_exc()
