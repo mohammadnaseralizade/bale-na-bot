@@ -88,22 +88,24 @@ def main_inline_keyboard() -> InlineKeyboardBuilder:
     kb.button(text="🔍 جستجوی جلسات حضوری", url="https://nairan.org/fa/meetings")
     kb.button(text="📊 روزشمار پاکی", url="https://nairan.org/fa/cleanlinesscalendar")
     kb.button(text="🌿 پیام امید امروز", callback_data="daily_quote")
-    kb.button(text="✉️ ارتباط با خدمات جهانی", callback_data="global_services")
-    kb.button(text="🤫 ارسال پیام ناشناس به کمیته", callback_data="anon_msg")
+    kb.button(text="✉️ ارتباط با کنفرانس جهانی", callback_data="global_services")
+    kb.button(text="🤫 ارسال پیام ناشناس", callback_data="anon_msg")
     
-    kb.adjust(1, 1, 1, 2, 1)
+    # چیدمان منوی اصلی: تک ستونه برای خوانایی بهتر
+    kb.adjust(1, 1, 1, 1, 1, 1)
     return kb
 
 def email_inline_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    # لیست کامل دکمه‌های ایمیل (بدون فروشگاه)
+    
+    # 👇 بخش‌های انگلیسی داخل پرانتز حذف شدند تا متن دکمه‌ها کامل دیده شود
     kb.button(text="اطلاعات عمومی و فلووشیپ", url="mailto:fsmail@na.org")
     kb.button(text="خدمات مشتری (سفارشات)", url="mailto:customer_service@na.org")
-    kb.button(text="هیئت جهانی (World Board)", url="mailto:worldboard@na.org")
-    kb.button(text="منابع انسانی (HR)", url="mailto:hrp@na.org")
-    kb.button(text="روابط عمومی (PR)", url="mailto:pr@na.org")
-    kb.button(text="بیمارستان‌ها و موسسات (H&I)", url="mailto:handi@na.org")
-    kb.button(text="وب‌سایت (Webmaster)", url="mailto:webmaster@na.org")
+    kb.button(text="هیئت جهانی", url="mailto:worldboard@na.org")
+    kb.button(text="منابع انسانی", url="mailto:hrp@na.org")
+    kb.button(text="روابط عمومی", url="mailto:pr@na.org")
+    kb.button(text="بیمارستان‌ها و موسسات", url="mailto:handi@na.org")
+    kb.button(text="وب‌سایت", url="mailto:webmaster@na.org")
     kb.button(text="رویدادها و کنوانسیون‌ها", url="mailto:events@na.org")
     kb.button(text="مجله The NA Way", url="mailto:naway@na.org")
     kb.button(text="کمک‌های مالی", url="mailto:contributions@na.org")
@@ -111,7 +113,7 @@ def email_inline_keyboard() -> InlineKeyboardBuilder:
     
     kb.button(text="🔙 بازگشت به منوی اصلی", callback_data="back_to_main")
     
-    # چیدمان دو ستونه برای ۱۱ دکمه بالا و دکمه بازگشت در پایین
+    # چیدمان: دو دکمه در هر ردیف (چون متن‌ها کوتاه‌تر شده‌اند، به راحتی جا می‌شوند)
     kb.adjust(2, 2, 2, 2, 2, 1, 1)
     return kb
 
