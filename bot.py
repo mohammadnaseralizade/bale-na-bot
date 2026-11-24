@@ -211,15 +211,26 @@ async def messages_handler(message: Message):
 
 @dp.message(Command("reply"))
 async def admin_reply_handler(message: Message):
-    if str(message.from_user.id) != str(ADMIN_ID): return
+    if not message.from_user or str(message.from_user.id) != str(ADMIN_ID):
+        return
+
+    parts = (message.text or "").split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer("فرمت: /reply USER_ID TEXT\nمثال: /reply 123456789 سلام")
+        return
+
     try:
-        parts = message.text.split(" ", 2)
         target_id = int(parts[1])
-        reply_text = parts[2]
-        await bot.send_message(chat_id=target_id, text=f"✉️ **پاسخ سازنده:**\n\n{reply_text}")
-        await message.answer("پاسخ با موفقیت ارسال شد.")
-    except Exception:
-        await message.answer("فرمت اشتباه است. استفاده: /reply USER_ID TEXT")
+    except ValueError:
+        await message.answer("❌ آیدی باید فقط عدد باشد.")
+        return
+
+    try:
+        await bot.send_message(chat_id=target_id, text=f"✉️ **پاسخ سازنده:**\n\n{parts[2]}")
+        await message.answer("✅ پاسخ با موفقیت ارسال شد.")
+    except Exception as e:
+        log(f"Reply error: {e}")
+        await message.answer(f"❌ خطا در ارسال: {e}")
 
 @dp.callback_query(F.data == "back_to_main")
 async def back_to_main_handler(callback: CallbackQuery):
@@ -292,7 +303,7 @@ async def handle_text_inputs(message: Message):
                 f"`/reply {user.id} متن پاسخ شما`"
             )
             
-            await bot.send_message(chat_id=ADMIN_ID, text=sender_info)
+            await bot.send_message(chat_id=int(ADMIN_ID), text=sender_info)
             await message.answer("✅ پیام شما با موفقیت برای سازنده ارسال شد.", reply_markup=main_inline_keyboard().as_markup())
         except Exception as e:
             log(f"Error sending msg to admin: {e}")
