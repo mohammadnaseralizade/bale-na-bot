@@ -301,20 +301,55 @@ def extract_jft(html: str) -> str:
 
     if BeautifulSoup:
         soup = BeautifulSoup(html, "html.parser")
-        for tag in soup(["script", "style", "noscript", "nav", "header", "footer", "form", "button", "svg"]):
+        for tag in soup(["script", "style", "noscript", "nav", "header", "footer", "form", "button", "svg", "table", "select"]):
             tag.decompose()
-        node = None
+
+        # 1) اگر سلکتور مشخص شده باشد، فقط همان بخش
         if JFT_SELECTOR:
             node = soup.select_one(JFT_SELECTOR)
-        if node is None:
-            node = soup.find("article") or soup.find("main") or soup.body or soup
-        text = node.get_text("\n")
+            if node is not None:
+                paras = [x.get_text(" ", strip=True) for x in node.find_all(["p", "h1", "h2", "h3", "h4", "li"])]
+                joined = "\n\n".join(x for x in paras if x) or node.get_text(" ", strip=True)
+                return _clean_text(joined)
+
+        # 2) استخراج هوشمند: فقط پاراگراف‌های متنی بلند (بدون تقویم، شماره‌ها و منو)
+        def is_noise(t: str) -> bool:
+            letters = sum(ch.isalpha() for ch in t)
+            return len(t) < 20 or letters < len(t) * 0.5
+
+        long_ps = []
+        seen = set()
+        first_p = None
+        for el in soup.find_all(["p", "div", "li"]):
+            # فقط عناصری که خودشان زیرمجموعه بلاک دیگر ندارند
+            if el.find(["p", "div", "li", "h1", "h2", "h3", "h4"]):
+                continue
+            t = el.get_text(" ", strip=True)
+            if is_noise(t) or t in seen:
+                continue
+            seen.add(t)
+            long_ps.append(t)
+            if first_p is None:
+                first_p = el
+
+        if long_ps:
+            title = ""
+            if first_p is not None:
+                h = first_p.find_previous(["h1", "h2", "h3", "h4", "h5"])
+                if h:
+                    title = h.get_text(" ", strip=True)
+            body = "\n\n".join(long_ps)
+            text = (title + "\n\n" + body) if title and title not in body else body
+        else:
+            text = soup.get_text(" ", strip=True)
     else:
         text = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\1>", "", html)
         text = re.sub(r"(?s)<br\s*/?>|</p>|</div>|</h\d>", "\n", text)
         text = re.sub(r"(?s)<[^>]+>", "", text)
         import html as _html
         text = _html.unescape(text)
+        lines = [ln.strip() for ln in text.splitlines()]
+        text = "\n\n".join(ln for ln in lines if len(ln) >= 20)
     return _clean_text(text)
 
 async def fetch_jft() -> str:
