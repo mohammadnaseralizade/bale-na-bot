@@ -365,7 +365,10 @@ def pick_jft(text: str) -> str:
         if idx != -1:
             t = t[:idx]
     t = re.sub(r"\s+", " ", t).strip()
-    return t
+    # حذف سال (مثل 2023 یا ۱۴۰۵) و نمادهای باقی‌مانده از انتهای متن
+    t = re.sub(r"[\s©\-–—]*(?:19|20|14)\d{2}\s*$", "", t)
+    t = re.sub(r"[\s©\-–—]*[۱۲]?[۰-۹]{3,4}\s*$", "", t)
+    return t.strip()
 
 async def fetch_jft() -> str:
     now = time.time()
