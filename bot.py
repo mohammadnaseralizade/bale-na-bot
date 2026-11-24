@@ -28,6 +28,7 @@ AI_STT_MODEL = os.getenv("AI_STT_MODEL", "whisper-1")   # تبدیل ویس به
 AI_TTS_MODEL = os.getenv("AI_TTS_MODEL", "tts-1")       # تبدیل متن به ویس
 AI_TTS_VOICE = os.getenv("AI_TTS_VOICE", "nova")
 MAX_VOICE_SECONDS = int(os.getenv("MAX_VOICE_SECONDS", "60"))
+MAX_VOICE_BYTES = int(os.getenv("MAX_VOICE_BYTES", str(2 * 1024 * 1024)))
 
 if not TOKEN:
     log("❌ خطا: متغیر محیطی BOT_TOKEN تنظیم نشده است.")
@@ -368,7 +369,12 @@ async def handle_voice(message: Message):
     if ai_client is None:
         await message.answer("⚠️ سرویس هوش مصنوعی در حال حاضر غیرفعال است.")
         return
-    if message.voice.duration and message.voice.duration > MAX_VOICE_SECONDS:
+    # در بله duration ممکن است به میلی‌ثانیه باشد؛ پس نرمال‌سازی می‌کنیم
+    raw_duration = getattr(message.voice, "duration", 0) or 0
+    duration_sec = raw_duration / 1000 if raw_duration > 1000 else raw_duration
+    file_size = getattr(message.voice, "file_size", 0) or 0
+    log(f"Voice received: duration_raw={raw_duration}, duration_sec={duration_sec}, size={file_size}")
+    if duration_sec > MAX_VOICE_SECONDS or file_size > MAX_VOICE_BYTES:
         await message.answer(f"⚠️ لطفاً ویس کوتاه‌تر از {MAX_VOICE_SECONDS} ثانیه بفرستید.")
         return
 
