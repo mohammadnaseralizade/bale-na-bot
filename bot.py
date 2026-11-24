@@ -438,7 +438,23 @@ async def test_jft_handler(message: Message):
 # ----- جلسات آنلاین (دریافت مستقیم از سایت) -----
 _online_cache = {"text": None, "time": 0.0}
 
+# فقط لینک‌های Zoom
+ZOOM_RE = re.compile(r"zoom\.(us|com)", re.I)
+
+# کلمات مربوط به روز برگزاری
+DAY_WORDS = (
+    "شنبه", "یکشنبه", "یک‌شنبه", "دوشنبه", "دو‌شنبه", "سه‌شنبه", "سه شنبه", "سهشنبه",
+    "چهارشنبه", "چهار‌شنبه", "پنجشنبه", "پنج‌شنبه", "پنج شنبه", "جمعه",
+    "هر روز", "همه روزه", "همه‌روزه", "روزانه", "ایام هفته",
+)
+# الگوی ساعت
+TIME_RE = re.compile(r"\d{1,2}\s*[:٫.]\s*\d{2}|[۰-۹]{1,2}\s*[:٫]\s*[۰-۹]{2}|ساعت|صبح|ظهر|عصر|شب")
+
+def _norm_fa(s: str) -> str:
+    return s.replace("ي", "ی").replace("ك", "ک").replace("\u200c", " ")
+
 def extract_online(html: str) -> str:
+    """متن خام صفحه (برای عیب‌یابی)."""
     try:
         from bs4 import BeautifulSoup
     except ImportError:
@@ -473,7 +489,7 @@ def extract_online(html: str) -> str:
     return _clean_text(text)
 
 def extract_online_groups(html: str) -> str:
-    """از صفحه فقط «نام گروه + توضیحات + لینک» هر جلسه را برمی‌گرداند."""
+    """فقط «نام گروه + روز و ساعت برگزاری + لینک Zoom» هر جلسه را برمی‌گرداند."""
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript", "nav", "header", "footer", "form", "svg", "select"]):
@@ -484,40 +500,54 @@ def extract_online_groups(html: str) -> str:
     if root is None:
         root = soup.find("main") or soup.body or soup
 
-    def good_href(h: str) -> bool:
+    def is_zoom(h: str) -> bool:
         h = (h or "").strip()
-        if not h.lower().startswith(("http://", "https://")):
-            return False
-        return h.rstrip("/") != ONLINE_URL.rstrip("/")
+        return h.lower().startswith(("http://", "https://")) and bool(ZOOM_RE.search(h))
 
-    def distinct_links(node):
-        return {a["href"].strip() for a in node.find_all("a", href=True) if good_href(a["href"])}
+    def zoom_links(node):
+        return {a["href"].strip() for a in node.find_all("a", href=True) if is_zoom(a["href"])}
+
+    day_words_norm = [_norm_fa(d) for d in DAY_WORDS]
+
+    def is_schedule(line: str) -> bool:
+        n = _norm_fa(line)
+        return any(d in n for d in day_words_norm) or bool(TIME_RE.search(n))
 
     groups, seen = [], set()
     for a in root.find_all("a", href=True):
         href = a["href"].strip()
-        if not good_href(href) or href in seen:
+        if not is_zoom(href) or href in seen:
             continue
-        # بالا رفتن تا کوچک‌ترین «کارت» که فقط یک لینک دارد و خیلی بلند نیست
+
+        # بالا رفتن تا کوچک‌ترین «کارت/ردیف» که فقط یک لینک Zoom دارد
         card, node = a, a
         while node.parent is not None and node.parent.name not in ("body", "html", "[document]"):
             parent = node.parent
-            if len(distinct_links(parent)) > 1 or len(parent.get_text(" ", strip=True)) > 700:
+            if len(zoom_links(parent)) > 1 or len(parent.get_text(" ", strip=True)) > 700:
                 break
             card, node = parent, parent
-        lines = [ln.strip() for ln in card.get_text("\n", strip=True).splitlines() if ln.strip()]
+
+        lines = [re.sub(r"\s+", " ", ln).strip()
+                 for ln in card.get_text("\n", strip=True).splitlines() if ln.strip()]
+        # حذف متن دکمه‌هایی مثل «ورود» / «لینک Zoom»
         btn = a.get_text(" ", strip=True)
-        if len(lines) > 1 and btn and len(btn) <= 15 and btn in lines:
-            lines.remove(btn)          # متن دکمه‌هایی مثل «ورود» یا «لینک جلسه»
+        if btn in lines and len(btn) <= 20:
+            lines.remove(btn)
+        # حذف خط‌هایی که خودشان آدرس لینک هستند
+        lines = [ln for ln in lines if not ln.lower().startswith("http")]
         if not lines:
             continue
+
         name = lines[0]
-        desc = " ".join(lines[1:])
-        desc = re.sub(r"\s+", " ", desc)[:300]
+        schedule = []
+        for ln in lines[1:]:
+            if is_schedule(ln) and ln not in schedule:
+                schedule.append(ln[:120])
         seen.add(href)
+
         item = f"🔹 {name}"
-        if desc:
-            item += f"\n{desc}"
+        if schedule:
+            item += "\n🗓 " + " | ".join(schedule)
         item += f"\n🔗 {href}"
         groups.append(item)
     return "\n\n".join(groups)
@@ -547,7 +577,7 @@ async def fetch_online() -> str:
         api_hints = sorted(set(re.findall(r"""["'](/?[\w\-./]*api[\w\-./?=&]*)["']""", html_text)))[:8]
         scripts = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html_text)[:6]
         raise ValueError(
-            f"گروهی با لینک پیدا نشد | status={resp.status_code} | html_len={len(html_text)} | "
+            f"گروهی با لینک Zoom پیدا نشد | status={resp.status_code} | html_len={len(html_text)} | "
             f"text_len={len(text)} | api_hints={api_hints} | scripts={scripts}"
         )
     _online_cache["text"] = text
