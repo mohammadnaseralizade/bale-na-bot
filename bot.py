@@ -22,7 +22,7 @@ log("🚀 شروع برنامه بله...")
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID") 
 AI_API_KEY = os.getenv("AI_API_KEY")
-AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.openai.com/v1") 
+AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.avalai.ir/v1") 
 
 if not TOKEN:
     log("❌ خطا: متغیر محیطی BOT_TOKEN تنظیم نشده است.")
@@ -111,14 +111,6 @@ init_db()
 # =========================================================
 # متن‌ها و پرامپت هوش مصنوعی
 # =========================================================
-DAILY_QUOTES = [
-    "امروز یک روز پاک دیگر است. فقط برای امروز.",
-    "ما با هم می‌توانیم کاری را انجام دهیم که به تنهایی از عهده آن برنمی‌آییم.",
-    "بهبودی یک سفر است، نه یک مقصد.",
-    "زمانی که تسلیم می‌شویم، شروع به بهبودی می‌کنیم.",
-    "خدمت به دیگران، کلید حفظ پاکی ماست."
-]
-
 WELCOME_TEXT = (
     "مرکز جامع خدمات و منابع انجمن معتادان گمنام (NA) 🌐🤝\n\n"
     "دریافت اطلاعات درباره NA 📚، جلسات مجازی 💻🌍، جلسات حضوری 🏢📍 و ارتباط مستقیم با کنفرانس خدمات جهانی(NA) 📞🌐. "
@@ -155,7 +147,7 @@ def main_reply_keyboard() -> ReplyKeyboardMarkup:
     kb.row(KeyboardButton("🌿 پیام امید امروز"))
     kb.row(KeyboardButton("✉️ ارتباط با کنفرانس خدمات جهانی NA"))
     kb.row(KeyboardButton("🤫 ارسال پیام به سازنده"))
-    kb.row(KeyboardButton("🤖 گفتگوی هوشمند")) # 👈 نام دکمه تغییر یافت
+    kb.row(KeyboardButton("🤖 گفتگوی هوشمند")) 
     return kb
 
 def email_inline_keyboard() -> InlineKeyboardBuilder:
@@ -264,25 +256,26 @@ async def inperson_meetings(message: Message):
 async def clean_calendar(message: Message):
     await message.answer("لینک روزشمار پاکی:\nhttps://nairan.org/fa/cleanlinesscalendar")
 
+# 👇 دکمه پیام امید امروز به لینک تغییر کرد
 @dp.message(F.text == "🌿 پیام امید امروز")
 async def daily_quote_msg(message: Message):
-    quote = random.choice(DAILY_QUOTES)
-    await message.answer(f"🌿 **پیام امید امروز:**\n\n{quote}\n\n«فقط برای امروز»")
+    text = (
+        "🌿 **پیام امید امروز (فقط برای امروز)**\n\n"
+        "برای مطالعه متن امروز و مشاهده تقویم، روی لینک زیر کلیک کنید:\n"
+        "👉 https://jft.nairan1.org/"
+    )
+    await message.answer(text, disable_web_page_preview=False)
 
 @dp.message(F.text == "✉️ ارتباط با کنفرانس خدمات جهانی NA")
 async def global_services_msg(message: Message):
     await message.answer(EMAIL_TEXT, reply_markup=email_inline_keyboard().as_markup())
 
+# 👇 متن اضافی حذف شد
 @dp.message(F.text == "🤫 ارسال پیام به سازنده")
 async def anon_msg_msg(message: Message):
     user_states[message.from_user.id] = "waiting_for_admin_msg"
-    await message.answer(
-        "📝 لطفاً متن پیام خود را برای سازنده بنویسید.\n"
-        "اطلاعات شما (نام و آیدی) همراه پیام برای سازنده ارسال می‌شود تا بتواند به شما پاسخ دهد.\n\n"
-        "برای انصراف دستور /start را بزنید."
-    )
+    await message.answer("📝 لطفاً متن پیام خود را برای سازنده بنویسید.")
 
-# 👇 هندلر دکمه تغییر یافته
 @dp.message(F.text == "🤖 گفتگوی هوشمند")
 async def activate_ai(message: Message):
     user_id = message.from_user.id
@@ -295,7 +288,7 @@ async def activate_ai(message: Message):
         "برای خروج از این بخش، دکمه «/start» را بزنید."
     )
 
-# ----- هندلر اصلی برای دریافت متن‌ها (مدیریت پیام ادمین و هوش مصنوعی) -----
+# ----- هندلر اصلی برای دریافت متن‌ها -----
 @dp.message(F.text & ~F.text.startswith('/'))
 async def handle_text_inputs(message: Message):
     user = message.from_user
