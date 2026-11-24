@@ -88,17 +88,17 @@ def main_inline_keyboard() -> InlineKeyboardBuilder:
     kb.button(text="🔍 جستجوی جلسات حضوری", url="https://nairan.org/fa/meetings")
     kb.button(text="📊 روزشمار پاکی", url="https://nairan.org/fa/cleanlinesscalendar")
     kb.button(text="🌿 پیام امید امروز", callback_data="daily_quote")
-    kb.button(text="✉️ ارتباط با کنفرانس جهانی", callback_data="global_services")
-    kb.button(text="🤫 ارسال پیام ناشناس", callback_data="anon_msg")
     
-    # چیدمان منوی اصلی: تک ستونه برای خوانایی بهتر
+    # 👇 جابجایی دکمه‌ها و تغییر نام دکمه ناشناس
+    kb.button(text="🤫 ارتباط ناشناس با سازنده", callback_data="anon_msg")
+    kb.button(text="✉️ ارتباط با کنفرانس جهانی", callback_data="global_services")
+    
+    # چیدمان تک ستونه
     kb.adjust(1, 1, 1, 1, 1, 1)
     return kb
 
 def email_inline_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    
-    # 👇 بخش‌های انگلیسی داخل پرانتز حذف شدند تا متن دکمه‌ها کامل دیده شود
     kb.button(text="اطلاعات عمومی و فلووشیپ", url="mailto:fsmail@na.org")
     kb.button(text="خدمات مشتری (سفارشات)", url="mailto:customer_service@na.org")
     kb.button(text="هیئت جهانی", url="mailto:worldboard@na.org")
@@ -113,7 +113,6 @@ def email_inline_keyboard() -> InlineKeyboardBuilder:
     
     kb.button(text="🔙 بازگشت به منوی اصلی", callback_data="back_to_main")
     
-    # چیدمان: دو دکمه در هر ردیف (چون متن‌ها کوتاه‌تر شده‌اند، به راحتی جا می‌شوند)
     kb.adjust(2, 2, 2, 2, 2, 1, 1)
     return kb
 
@@ -160,15 +159,15 @@ async def handle_text_inputs(message: Message):
         user_states.pop(user.id, None)
         
         if not ADMIN_ID:
-            await message.answer("⚠️ متاسفانه ارسال پیام به کمیته در حال حاضر غیرفعال است.")
+            await message.answer("⚠️ متاسفانه ارسال پیام به سازنده در حال حاضر غیرفعال است.")
             return
             
         try:
             await bot.send_message(
                 chat_id=ADMIN_ID, 
-                text=f"📩 **پیام ناشناس جدید:**\n\n{message.text}\n\n(برای پاسخ به این کاربر از دستور زیر استفاده کنید: `/reply {user.id} متن پاسخ`)"
+                text=f"📩 **پیام ناشناس جدید برای سازنده:**\n\n{message.text}\n\n(برای پاسخ به این کاربر از دستور زیر استفاده کنید: `/reply {user.id} متن پاسخ`)"
             )
-            await message.answer("✅ پیام شما با موفقیت و به صورت کاملاً ناشناس برای کمیته ارسال شد.", reply_markup=main_inline_keyboard().as_markup())
+            await message.answer("✅ پیام شما با موفقیت و به صورت کاملاً ناشناس برای سازنده ارسال شد.", reply_markup=main_inline_keyboard().as_markup())
         except Exception as e:
             log(f"Error sending anon msg: {e}")
             await message.answer("❌ خطا در ارسال پیام. لطفاً بعداً تلاش کنید.")
@@ -181,7 +180,7 @@ async def admin_reply_handler(message: Message):
         parts = message.text.split(" ", 2)
         target_id = int(parts[1])
         reply_text = parts[2]
-        await bot.send_message(chat_id=target_id, text=f"✉️ **پاسخ کمیته:**\n\n{reply_text}")
+        await bot.send_message(chat_id=target_id, text=f"✉️ **پاسخ سازنده:**\n\n{reply_text}")
         await message.answer("پاسخ با موفقیت ارسال شد.")
     except Exception:
         await message.answer("فرمت اشتباه است. استفاده: /reply USER_ID TEXT")
@@ -196,13 +195,13 @@ async def daily_quote_handler(callback: CallbackQuery):
     )
     await callback.answer()
 
-# ----- پیام ناشناس -----
+# ----- پیام ناشناس (تغییر متن) -----
 @dp.callback_query(F.data == "anon_msg")
 async def anon_msg_handler(callback: CallbackQuery):
     user_states[callback.from_user.id] = "waiting_for_anon_msg"
     await callback.message.edit_text(
-        "🤫 لطفاً متن پیام خود را برای کمیته خدمات بنویسید.\n"
-        "نام و آیدی شما برای کمیته نمایش داده نخواهد شد.\n\n"
+        "🤫 لطفاً متن پیام خود را برای سازنده بنویسید.\n"
+        "نام و آیدی شما نمایش داده نخواهد شد و پیام به صورت ناشناس ارسال می‌شود.\n\n"
         "برای انصراف دستور /start را بزنید."
     )
     await callback.answer()
