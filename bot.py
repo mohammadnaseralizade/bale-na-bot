@@ -488,8 +488,22 @@ def extract_online(html: str) -> str:
     text = root.get_text("\n", strip=True)
     return _clean_text(text)
 
+FIELD_ICONS = (
+    ("تلفن", "📞"), ("جنسیت", "👥"), ("ویژگی", "✨"), ("منطقه", "🏙"),
+    ("تاریخ", "📅"), ("شهر", "📍"), ("آدرس", "🏠"), ("بستر", "💻"),
+    ("رمز", "🔑"), ("ایمیل", "✉️"), ("لینک", "🔗"), ("روز", "🗓"), ("ساعت", "🕘"),
+)
+EMPTY_VALUES = {"", "0", "۰", "-", "—", "ندارد"}
+LABEL_RE = re.compile(r"^([^:：\d]{1,30}?)\s*[:：]\s*(.*)$")
+
+def _field_icon(label: str) -> str:
+    for key, icon in FIELD_ICONS:
+        if key in label:
+            return icon
+    return "▫️"
+
 def extract_online_groups(html: str) -> str:
-    """فقط «نام گروه + روز و ساعت برگزاری + لینک Zoom» هر جلسه را برمی‌گرداند."""
+    """هر جلسه را به شکل «نام گروه + فیلدهای label : value + لینک Zoom» برمی‌گرداند."""
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript", "nav", "header", "footer", "form", "svg", "select"]):
@@ -507,11 +521,11 @@ def extract_online_groups(html: str) -> str:
     def zoom_links(node):
         return {a["href"].strip() for a in node.find_all("a", href=True) if is_zoom(a["href"])}
 
-    day_words_norm = [_norm_fa(d) for d in DAY_WORDS]
-
-    def is_schedule(line: str) -> bool:
-        n = _norm_fa(line)
-        return any(d in n for d in day_words_norm) or bool(TIME_RE.search(n))
+    def parse_label(line: str):
+        m = LABEL_RE.match(line)
+        if not m or m.group(2).startswith("//"):
+            return None
+        return m.group(1).strip(), m.group(2).strip()
 
     groups, seen = [], set()
     for a in root.find_all("a", href=True):
@@ -519,36 +533,56 @@ def extract_online_groups(html: str) -> str:
         if not is_zoom(href) or href in seen:
             continue
 
-        # بالا رفتن تا کوچک‌ترین «کارت/ردیف» که فقط یک لینک Zoom دارد
+        # بالا رفتن تا کوچک‌ترین «کارت» که فقط یک لینک Zoom دارد
         card, node = a, a
         while node.parent is not None and node.parent.name not in ("body", "html", "[document]"):
             parent = node.parent
-            if len(zoom_links(parent)) > 1 or len(parent.get_text(" ", strip=True)) > 700:
+            if len(zoom_links(parent)) > 1 or len(parent.get_text(" ", strip=True)) > 1500:
                 break
             card, node = parent, parent
 
         lines = [re.sub(r"\s+", " ", ln).strip()
                  for ln in card.get_text("\n", strip=True).splitlines() if ln.strip()]
-        # حذف متن دکمه‌هایی مثل «ورود» / «لینک Zoom»
         btn = a.get_text(" ", strip=True)
         if btn in lines and len(btn) <= 20:
             lines.remove(btn)
-        # حذف خط‌هایی که خودشان آدرس لینک هستند
         lines = [ln for ln in lines if not ln.lower().startswith("http")]
         if not lines:
             continue
 
-        name = lines[0]
-        schedule = []
-        for ln in lines[1:]:
-            if is_schedule(ln) and ln not in schedule:
-                schedule.append(ln[:120])
-        seen.add(href)
+        name = None
+        extra = []     # خط‌های بدون برچسب (مثل روز و ساعت)
+        fields = []    # (label, value)
+        i = 0
+        while i < len(lines):
+            ln = lines[i]
+            parsed = parse_label(ln)
+            if parsed:
+                label, value = parsed
+                # اگر مقدار در خط بعدی آمده باشد
+                if not value and i + 1 < len(lines) and parse_label(lines[i + 1]) is None:
+                    value = lines[i + 1]
+                    i += 1
+                fields.append((label, value))
+            elif name is None:
+                name = ln
+            else:
+                extra.append(ln)
+            i += 1
 
-        item = f"🔹 {name}"
-        if schedule:
-            item += "\n🗓 " + " | ".join(schedule)
-        item += f"\n🔗 {href}"
+        item = f"🔹 {name or 'جلسه آنلاین'}"
+        for ln in extra:
+            if ln != name:
+                item += f"\n🗓 {ln[:120]}"
+        for label, value in fields:
+            if "لینک" in label:
+                continue  # لینک را از href می‌گذاریم
+            if _norm_fa(value).strip() in EMPTY_VALUES:
+                continue
+            item += f"\n{_field_icon(label)} {label} : {value}"
+        item += f"\n🔗 لینک : {href}"
+
+        seen.add(href)
         groups.append(item)
     return "\n\n".join(groups)
 
