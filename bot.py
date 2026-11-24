@@ -89,9 +89,9 @@ def main_inline_keyboard() -> InlineKeyboardBuilder:
     kb.button(text="📊 روزشمار پاکی", url="https://nairan.org/fa/cleanlinesscalendar")
     kb.button(text="🌿 پیام امید امروز", callback_data="daily_quote")
     
-    # 👇 جابجایی دکمه‌ها و تغییر نام دکمه ناشناس
-    kb.button(text="🤫 ارتباط ناشناس با سازنده", callback_data="anon_msg")
-    kb.button(text="✉️ ارتباط با کنفرانس جهانی", callback_data="global_services")
+    # 👇 متن دکمه دقیقاً طبق درخواست شما تغییر کرد
+    kb.button(text="✉️ ارتباط با کنفرانس خدمات جهانی NA", callback_data="global_services")
+    kb.button(text="🤫 ارسال پیام به سازنده", callback_data="anon_msg")
     
     # چیدمان تک ستونه
     kb.adjust(1, 1, 1, 1, 1, 1)
@@ -147,7 +147,7 @@ async def back_to_main_handler(callback: CallbackQuery):
     await callback.message.edit_text(WELCOME_TEXT, reply_markup=main_inline_keyboard().as_markup())
     await callback.answer()
 
-# ----- هندلر دریافت متن (برای پیام ناشناس) -----
+# ----- هندلر دریافت متن (پیام برای سازنده) -----
 @dp.message()
 async def handle_text_inputs(message: Message):
     user = message.from_user
@@ -155,7 +155,7 @@ async def handle_text_inputs(message: Message):
     
     state = user_states.get(user.id)
 
-    if state == "waiting_for_anon_msg":
+    if state == "waiting_for_admin_msg":
         user_states.pop(user.id, None)
         
         if not ADMIN_ID:
@@ -163,13 +163,22 @@ async def handle_text_inputs(message: Message):
             return
             
         try:
-            await bot.send_message(
-                chat_id=ADMIN_ID, 
-                text=f"📩 **پیام ناشناس جدید برای سازنده:**\n\n{message.text}\n\n(برای پاسخ به این کاربر از دستور زیر استفاده کنید: `/reply {user.id} متن پاسخ`)"
+            # 👇 ساخت متن پیام همراه با اطلاعات فرستنده
+            sender_info = (
+                f"📩 **پیام جدید از طرف کاربر:**\n\n"
+                f"👤 نام: {user.first_name}\n"
+                f"🔗 نام کاربری: @{user.username if user.username else 'ندارد'}\n"
+                f"🆔 آیدی عددی: `{user.id}`\n\n"
+                f"📝 **متن پیام:**\n{message.text}\n\n"
+                f"---\n"
+                f"💡 برای پاسخ به این کاربر، روی آیدی عددی بالا کلیک کنید یا از دستور زیر استفاده کنید:\n"
+                f"`/reply {user.id} متن پاسخ شما`"
             )
-            await message.answer("✅ پیام شما با موفقیت و به صورت کاملاً ناشناس برای سازنده ارسال شد.", reply_markup=main_inline_keyboard().as_markup())
+            
+            await bot.send_message(chat_id=ADMIN_ID, text=sender_info)
+            await message.answer("✅ پیام شما با موفقیت برای سازنده ارسال شد.", reply_markup=main_inline_keyboard().as_markup())
         except Exception as e:
-            log(f"Error sending anon msg: {e}")
+            log(f"Error sending msg to admin: {e}")
             await message.answer("❌ خطا در ارسال پیام. لطفاً بعداً تلاش کنید.")
         return
 
@@ -195,13 +204,13 @@ async def daily_quote_handler(callback: CallbackQuery):
     )
     await callback.answer()
 
-# ----- پیام ناشناس (تغییر متن) -----
+# ----- دریافت پیام برای سازنده -----
 @dp.callback_query(F.data == "anon_msg")
 async def anon_msg_handler(callback: CallbackQuery):
-    user_states[callback.from_user.id] = "waiting_for_anon_msg"
+    user_states[callback.from_user.id] = "waiting_for_admin_msg"
     await callback.message.edit_text(
-        "🤫 لطفاً متن پیام خود را برای سازنده بنویسید.\n"
-        "نام و آیدی شما نمایش داده نخواهد شد و پیام به صورت ناشناس ارسال می‌شود.\n\n"
+        "📝 لطفاً متن پیام خود را برای سازنده بنویسید.\n"
+        "اطلاعات شما (نام و آیدی) همراه پیام برای سازنده ارسال می‌شود تا بتواند به شما پاسخ دهد.\n\n"
         "برای انصراف دستور /start را بزنید."
     )
     await callback.answer()
