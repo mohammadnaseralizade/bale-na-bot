@@ -4,6 +4,8 @@ import traceback
 import asyncio
 import sqlite3
 import io
+import re
+import time
 import tempfile
 
 from baleio import Bot, Dispatcher, F
@@ -27,6 +29,9 @@ AI_CHAT_MODEL = os.getenv("AI_CHAT_MODEL", "gpt-4o-mini")
 AI_STT_MODEL = os.getenv("AI_STT_MODEL", "whisper-1")   # تبدیل ویس به متن
 AI_TTS_MODEL = os.getenv("AI_TTS_MODEL", "tts-1")       # تبدیل متن به ویس
 AI_TTS_VOICE = os.getenv("AI_TTS_VOICE", "nova")
+JFT_URL = os.getenv("JFT_URL", "https://jft.nairan1.org/")
+JFT_SELECTOR = os.getenv("JFT_SELECTOR", "")   # اختیاری: سلکتور CSS بخش متن در سایت
+JFT_CACHE_SECONDS = int(os.getenv("JFT_CACHE_SECONDS", "1800"))
 MAX_VOICE_SECONDS = int(os.getenv("MAX_VOICE_SECONDS", "60"))
 MAX_VOICE_BYTES = int(os.getenv("MAX_VOICE_BYTES", str(2 * 1024 * 1024)))
 
@@ -163,7 +168,7 @@ def main_inline_keyboard() -> InlineKeyboardBuilder:
     kb.button(text="💻 اطلاع از جلسات آنلاین", url="https://nairan1.org/onlinemeeting/")
     kb.button(text="🔍 جستجوی جلسات حضوری", url="https://nairan.org/fa/meetings")
     kb.button(text="📊 روزشمار پاکی", url="https://nairan.org/fa/cleanlinesscalendar")
-    kb.button(text="🌿 پیام امید امروز", url="https://jft.nairan1.org/")
+    kb.button(text="🌿 پیام امید امروز", callback_data="menu_jft")
     # دکمه‌های عملیاتی
     kb.button(text="✉️ ارتباط با کنفرانس خدمات جهانی NA", callback_data="menu_email")
     kb.button(text="🤫 ارسال پیام به سازنده", callback_data="menu_admin_msg")
@@ -272,6 +277,94 @@ async def admin_reply_handler(message: Message):
     except Exception as e:
         log(f"Reply error: {e}")
         await message.answer(f"❌ خطا در ارسال: {e}")
+
+# ----- پیام امید امروز (دریافت مستقیم از سایت) -----
+_jft_cache = {"text": None, "time": 0.0}
+
+def _clean_text(text: str) -> str:
+    # حذف کاراکترهایی که ممکن است فرمت‌بندی پیام را خراب کنند
+    text = re.sub(r"[*_`\[\]]", "", text)
+    lines = [ln.strip() for ln in text.splitlines()]
+    out = []
+    for ln in lines:
+        if ln:
+            out.append(ln)
+        elif out and out[-1] != "":
+            out.append("")
+    return "\n".join(out).strip()
+
+def extract_jft(html: str) -> str:
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        BeautifulSoup = None
+
+    if BeautifulSoup:
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "noscript", "nav", "header", "footer", "form", "button", "svg"]):
+            tag.decompose()
+        node = None
+        if JFT_SELECTOR:
+            node = soup.select_one(JFT_SELECTOR)
+        if node is None:
+            node = soup.find("article") or soup.find("main") or soup.body or soup
+        text = node.get_text("\n")
+    else:
+        text = re.sub(r"(?is)<(script|style|noscript).*?>.*?</\1>", "", html)
+        text = re.sub(r"(?s)<br\s*/?>|</p>|</div>|</h\d>", "\n", text)
+        text = re.sub(r"(?s)<[^>]+>", "", text)
+        import html as _html
+        text = _html.unescape(text)
+    return _clean_text(text)
+
+async def fetch_jft() -> str:
+    now = time.time()
+    if _jft_cache["text"] and now - _jft_cache["time"] < JFT_CACHE_SECONDS:
+        return _jft_cache["text"]
+    import httpx
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        resp = await client.get(JFT_URL, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        resp.encoding = resp.encoding or "utf-8"
+        text = extract_jft(resp.text)
+    if len(text) < 40:
+        raise ValueError("متن کافی از سایت استخراج نشد")
+    text = text[:3500]
+    _jft_cache["text"] = text
+    _jft_cache["time"] = now
+    return text
+
+def jft_markup():
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔙 بازگشت به منوی اصلی", callback_data="back_to_main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+@dp.callback_query(F.data == "menu_jft")
+async def jft_handler(callback: CallbackQuery):
+    await callback.answer()
+    try:
+        text = await fetch_jft()
+        await callback.message.answer("🌿 پیام امید امروز (فقط برای امروز)\n\n" + text, reply_markup=jft_markup())
+    except Exception as e:
+        log(f"JFT error: {e}")
+        traceback.print_exc()
+        await callback.message.answer(
+            "⚠️ الان نتوانستم پیام امروز را دریافت کنم. لطفاً چند دقیقه بعد دوباره تلاش کنید.",
+            reply_markup=jft_markup()
+        )
+
+@dp.message(Command("testjft"))
+async def test_jft_handler(message: Message):
+    # ویژه ادمین: برای بررسی اینکه متن درست استخراج می‌شود
+    if not message.from_user or str(message.from_user.id) != str(ADMIN_ID):
+        return
+    _jft_cache["text"] = None
+    try:
+        text = await fetch_jft()
+        await message.answer(f"✅ {len(text)} کاراکتر دریافت شد.\n\n{text[:1500]}")
+    except Exception as e:
+        await message.answer(f"❌ خطا: {e}")
 
 # ----- هندلرهای دکمه‌های شیشه‌ای -----
 @dp.callback_query(F.data == "back_to_main")
