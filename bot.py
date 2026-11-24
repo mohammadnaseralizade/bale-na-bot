@@ -851,6 +851,66 @@ async def debug_online_handler(message: Message):
     except Exception as e:
         await message.answer(f"❌ خطا: {type(e).__name__}: {e}"[:3500])
 
+def extract_table_meetings(html: str):
+    """جدول جلسات را می‌خواند: هر ردیف = نام گروه + روز + ساعت + لینک Zoom (بدون هیچ متن اضافه)."""
+    import html as _html
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+    results = []
+    for table in soup.find_all("table"):
+        rows = table.find_all("tr")
+        if not rows:
+            continue
+
+        def cells_of(tr):
+            return [re.sub(r"\s+", " ", c.get_text(" ", strip=True)).strip() for c in tr.find_all(["th", "td"])]
+
+        # ستون‌ها را از ردیف عنوان تشخیص می‌دهیم؛ اگر نبود، ترتیب پیش‌فرض: نام، روز، ساعت
+        name_i, day_i, time_i = 0, 1, 2
+        first = cells_of(rows[0])
+        if first and not ZOOM_URL_RE.search(_html.unescape(str(rows[0]))):
+            for idx, c in enumerate(first):
+                n = _norm_fa(c)
+                if "نام" in n or "گروه" in n:
+                    name_i = idx
+                    break
+            for idx, c in enumerate(first):
+                n = _norm_fa(c)
+                if "روز" in n:
+                    day_i = idx
+                    break
+            else:
+                day_i = None
+            for idx, c in enumerate(first):
+                if "ساعت" in _norm_fa(c):
+                    time_i = idx
+                    break
+            else:
+                time_i = None
+            if time_i is not None and time_i == day_i:
+                time_i = None
+
+        for tr in rows:
+            m = ZOOM_URL_RE.search(_html.unescape(str(tr)))
+            if not m:
+                continue
+            zoom = m.group(0).strip().rstrip(".,;)،")
+            cells = cells_of(tr)
+
+            def get(i):
+                return cells[i] if i is not None and 0 <= i < len(cells) else ""
+
+            name, day, tm = get(name_i), get(day_i), get(time_i)
+            if not name:
+                continue
+            when = " | ".join(x for x in (day, tm) if x)
+            item = f"🔹 {name}"
+            if when:
+                item += f"\n🗓 {when}"
+            item += f"\n🔗 {zoom}"
+            results.append((item, zoom, name))
+    return results
+
 async def fetch_online() -> str:
     now = time.time()
     if _online_cache["text"] and now - _online_cache["time"] < ONLINE_CACHE_SECONDS:
@@ -866,13 +926,13 @@ async def fetch_online() -> str:
         # حالت ۱: لینک Zoom در خود صفحه لیست است (لینک، متن یا ویژگی تگ)
         _online_debug["excluded"] = []
         card_items, seen_z = [], set()
-        for item, zoom, title in extract_zoom_cards(html_text):
+        for item, zoom, title in (extract_table_meetings(html_text) or extract_zoom_cards(html_text)):
             if not is_recovery_group(title):
                 _online_debug["excluded"].append(title)
                 continue
-            if zoom in seen_z:
+            if item in seen_z:
                 continue
-            seen_z.add(zoom)
+            seen_z.add(item)
             card_items.append(item)
         text = "\n\n".join(card_items)
 
