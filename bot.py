@@ -602,6 +602,24 @@ from urllib.parse import urljoin, urlparse
 ONLINE_LINK_SELECTOR = os.getenv("ONLINE_LINK_SELECTOR", "")   # اختیاری: سلکتور CSS لینک‌های جلسات در صفحه لیست
 ONLINE_MAX_PAGES = int(os.getenv("ONLINE_MAX_PAGES", "60"))     # حداکثر تعداد صفحه جلسه که بررسی می‌شود
 
+# فقط گروه‌های بهبودی: عنوان‌هایی که یکی از این کلمات را دارند حذف می‌شوند (با ویرگول جدا کنید)
+ONLINE_EXCLUDE_WORDS = [w.strip() for w in os.getenv(
+    "ONLINE_EXCLUDE_WORDS",
+    "روابط عمومی,کمیته,معارفه,شورا,هیئت,هیات,کارگاه,همایش,کنوانسیون,سمینار,نشست,برگزار می,اطلاعیه,فراخوان,مراسم,جشن"
+).split(",") if w.strip()]
+# اختیاری: اگر پر شود، فقط عنوان‌هایی که یکی از این کلمات را دارند نمایش داده می‌شوند (مثلاً: گروه)
+ONLINE_INCLUDE_WORDS = [w.strip() for w in os.getenv("ONLINE_INCLUDE_WORDS", "").split(",") if w.strip()]
+
+def is_recovery_group(title: str) -> bool:
+    t = _norm_fa(title)
+    if any(_norm_fa(w) in t for w in ONLINE_EXCLUDE_WORDS):
+        return False
+    if ONLINE_INCLUDE_WORDS and not any(_norm_fa(w) in t for w in ONLINE_INCLUDE_WORDS):
+        return False
+    return True
+
+_online_debug = {"excluded": []}
+
 ZOOM_URL_RE = re.compile(r"https?://[^\s\"'<>]*zoom\.(?:us|com)[^\s\"'<>]*", re.I)
 SKIP_PATH_PARTS = ("/category/", "/author/", "/tag/", "/page/", "/wp-", "/feed", "/search", "/comments")
 SKIP_EXT = (".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf", ".zip", ".mp3", ".mp4")
@@ -711,7 +729,7 @@ def parse_meeting_page(html: str, url: str):
             continue
         item += f"\n{_field_icon(label)} {label} : {value}"
     item += f"\n🔗 لینک : {zoom}"
-    return item, zoom
+    return item, zoom, (title or "")
 
 async def fetch_online() -> str:
     now = time.time()
@@ -745,6 +763,7 @@ async def fetch_online() -> str:
 
             results = await asyncio.gather(*(one(u) for u in links))
             items, seen_zoom = [], set()
+            _online_debug["excluded"] = []
             for r in results:
                 if r is False:
                     continue
@@ -752,7 +771,10 @@ async def fetch_online() -> str:
                 if r is None:
                     no_zoom += 1
                     continue
-                item, zoom = r
+                item, zoom, title = r
+                if not is_recovery_group(title):
+                    _online_debug["excluded"].append(title)
+                    continue
                 if zoom in seen_zoom:
                     continue
                 seen_zoom.add(zoom)
@@ -763,6 +785,7 @@ async def fetch_online() -> str:
         raise ValueError(
             f"جلسه‌ای با لینک Zoom پیدا نشد | status={status} | html_len={len(html_text)} | "
             f"detail_links={len(links)} | pages_ok={fetched} | pages_without_zoom={no_zoom} | "
+            f"excluded={_online_debug['excluded'][:5]} | "
             f"sample_links={links[:5]}"
         )
     _online_cache["text"] = text
@@ -810,7 +833,9 @@ async def test_online_handler(message: Message):
     _online_cache["text"] = None
     try:
         text = await fetch_online()
-        await message.answer(f"✅ {len(text)} کاراکتر دریافت شد.\n\n{text[:1500]}")
+        ex = _online_debug["excluded"]
+        ex_txt = ("\n\n🚫 حذف‌شده‌ها (" + str(len(ex)) + "):\n" + "\n".join("• " + x for x in ex[:15])) if ex else ""
+        await message.answer(f"✅ {len(text)} کاراکتر دریافت شد.\n\n{text[:1500]}{ex_txt}"[:3500])
     except Exception as e:
         await message.answer(f"❌ خطا: {type(e).__name__}: {e}"[:3500])
 
