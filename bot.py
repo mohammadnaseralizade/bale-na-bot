@@ -736,6 +736,121 @@ def parse_meeting_page(html: str, url: str):
     item += f"\n🔗 لینک : {zoom}"
     return item, zoom, (title or "")
 
+ONLINE_SHOW_FULL_LIST_BUTTON = os.getenv("ONLINE_SHOW_FULL_LIST_BUTTON", "0") == "1"   # دکمه لینک سایت (پیش‌فرض خاموش)
+
+def _build_meeting_item(lines, zoom, title=None):
+    """از خط‌های متن یک جلسه، متن آماده نمایش می‌سازد. فقط نام، فیلدها و لینک Zoom."""
+    def parse_label(line: str):
+        m = LABEL_RE.match(line)
+        if not m or m.group(2).startswith("//"):
+            return None
+        return m.group(1).strip(), m.group(2).strip()
+
+    def is_schedule(line: str) -> bool:
+        n = _norm_fa(line)
+        return any(_norm_fa(d) in n for d in DAY_WORDS) or bool(TIME_RE.search(n))
+
+    name, fields, extra = title, [], []
+    i = 0
+    while i < len(lines):
+        parsed = parse_label(lines[i])
+        if parsed:
+            label, value = parsed
+            if not value and i + 1 < len(lines) and parse_label(lines[i + 1]) is None:
+                value = lines[i + 1]
+                i += 1
+            fields.append((label, value))
+        elif name is None:
+            name = lines[i]
+        elif is_schedule(lines[i]) and len(lines[i]) <= 80 and lines[i] != name and lines[i] not in extra:
+            extra.append(lines[i])
+        i += 1
+
+    item = f"🔹 {name or 'جلسه آنلاین'}"
+    for ln in extra:
+        item += f"\n🗓 {ln}"
+    for label, value in fields:
+        if "لینک" in label or _norm_fa(value).strip() in EMPTY_VALUES:
+            continue
+        item += f"\n{_field_icon(label)} {label} : {value}"
+    item += f"\n🔗 لینک : {zoom}"
+    return item, zoom, (name or "")
+
+def extract_zoom_cards(html: str):
+    """هر لینک Zoom را در صفحه پیدا می‌کند (در href، متن یا هر ویژگی تگ) و کارت اطراف آن را برمی‌گرداند."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript", "nav", "header", "footer", "svg", "select"]):
+        tag.decompose()
+    root = None
+    if ONLINE_SELECTOR:
+        root = soup.select_one(ONLINE_SELECTOR)
+    if root is None:
+        root = soup.find("main") or soup.body or soup
+
+    cands = {}   # url -> element
+    def add(el, url):
+        url = url.strip().rstrip(".,;)،")
+        if url not in cands:
+            cands[url] = el
+
+    for el in root.find_all(True):
+        for v in el.attrs.values():
+            val = " ".join(v) if isinstance(v, list) else str(v)
+            m = ZOOM_URL_RE.search(val)
+            if m:
+                add(el, m.group(0))
+    for t in root.find_all(string=ZOOM_URL_RE):
+        m = ZOOM_URL_RE.search(str(t))
+        if m and t.parent is not None:
+            add(t.parent, m.group(0))
+
+    anc = {u: {id(x) for x in [el] + list(el.parents)} for u, el in cands.items()}
+    results = []
+    for url, el in cands.items():
+        card, node = el, el
+        while node.parent is not None and node.parent.name not in ("body", "html", "[document]"):
+            parent = node.parent
+            inside = sum(1 for u in cands if id(parent) in anc[u])
+            if inside > 1 or len(parent.get_text(" ", strip=True)) > 1500:
+                break
+            card, node = parent, parent
+        lines = [re.sub(r"\s+", " ", ln).strip()
+                 for ln in card.get_text("\n", strip=True).splitlines() if ln.strip()]
+        lines = [ln for ln in lines if not ln.lower().startswith("http")]
+        if lines:
+            results.append(_build_meeting_item(lines, url))
+    return results
+
+@dp.message(Command("debugonline"))
+async def debug_online_handler(message: Message):
+    """ویژه ادمین: گزارش ساختار صفحه جلسات آنلاین برای عیب‌یابی."""
+    if not message.from_user or str(message.from_user.id) != str(ADMIN_ID):
+        return
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}) as client:
+            resp = await client.get(ONLINE_URL)
+            html = resp.text
+        low = html.lower()
+        urls = ZOOM_URL_RE.findall(html) and [m.group(0) for m in ZOOM_URL_RE.finditer(html)]
+        rep = [
+            f"status={resp.status_code} html_len={len(html)}",
+            f"zoom_word={low.count('zoom')} zoom_urls={len(urls or [])}",
+            f"<a>={low.count('<a ')} <table>={low.count('<table')} <iframe>={low.count('<iframe')}",
+            f"admin-ajax={low.count('admin-ajax')} wp-json={low.count('wp-json')} fetch(={low.count('fetch(')} json={low.count('application/json')}",
+        ]
+        for m in list(re.finditer(r"zoom", low))[:3]:
+            ctx = html[max(0, m.start() - 150): m.start() + 150].replace("\n", " ")
+            rep.append("… " + ctx + " …")
+        rep.append("iframes: " + str(re.findall(r'<iframe[^>]+src=["\']([^"\']+)', html, re.I)[:5]))
+        rep.append("detail_links: " + str(extract_detail_links(html)[:8]))
+        rep.append("متن صفحه:\n" + extract_online(html)[:700])
+        for chunk in split_text("\n\n".join(rep), 3500):
+            await message.answer(chunk)
+    except Exception as e:
+        await message.answer(f"❌ خطا: {type(e).__name__}: {e}"[:3500])
+
 async def fetch_online() -> str:
     now = time.time()
     if _online_cache["text"] and now - _online_cache["time"] < ONLINE_CACHE_SECONDS:
@@ -748,8 +863,18 @@ async def fetch_online() -> str:
         html_text = resp.text
         status = resp.status_code
 
-        # حالت ۱: خود صفحه لیست، لینک Zoom دارد
-        text = extract_online_groups(html_text)
+        # حالت ۱: لینک Zoom در خود صفحه لیست است (لینک، متن یا ویژگی تگ)
+        _online_debug["excluded"] = []
+        card_items, seen_z = [], set()
+        for item, zoom, title in extract_zoom_cards(html_text):
+            if not is_recovery_group(title):
+                _online_debug["excluded"].append(title)
+                continue
+            if zoom in seen_z:
+                continue
+            seen_z.add(zoom)
+            card_items.append(item)
+        text = "\n\n".join(card_items)
 
         # حالت ۲: لینک Zoom داخل صفحه هر جلسه است
         if len(text) < 20:
@@ -768,7 +893,6 @@ async def fetch_online() -> str:
 
             results = await asyncio.gather(*(one(u) for u in links))
             items, seen_zoom = [], set()
-            _online_debug["excluded"] = []
             for r in results:
                 if r is False:
                     continue
@@ -808,7 +932,7 @@ async def online_handler(callback: CallbackQuery):
         chunks = split_text("💻 جلسات آنلاین\n\n" + text)
         for i, chunk in enumerate(chunks):
             is_last = i == len(chunks) - 1
-            if is_last and truncated:
+            if is_last and truncated and ONLINE_SHOW_FULL_LIST_BUTTON:
                 kb = InlineKeyboardBuilder()
                 kb.button(text="🌐 مشاهده لیست کامل", url=ONLINE_URL)
                 kb.button(text="🔙 بازگشت به منوی اصلی", callback_data="back_to_main")
