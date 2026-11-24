@@ -326,9 +326,15 @@ async def fetch_jft() -> str:
         resp = await client.get(JFT_URL, headers={"User-Agent": "Mozilla/5.0"})
         resp.raise_for_status()
         resp.encoding = resp.encoding or "utf-8"
-        text = extract_jft(resp.text)
+        html_text = resp.text
+        text = extract_jft(html_text)
     if len(text) < 40:
-        raise ValueError("متن کافی از سایت استخراج نشد")
+        api_hints = sorted(set(re.findall(r"""["'](/?[\w\-./]*api[\w\-./?=&]*)["']""", html_text)))[:8]
+        scripts = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html_text)[:6]
+        raise ValueError(
+            f"متن کافی استخراج نشد | status={resp.status_code} | html_len={len(html_text)} | "
+            f"text_len={len(text)} | api_hints={api_hints} | scripts={scripts}"
+        )
     text = text[:3500]
     _jft_cache["text"] = text
     _jft_cache["time"] = now
@@ -347,8 +353,14 @@ async def jft_handler(callback: CallbackQuery):
         text = await fetch_jft()
         await callback.message.answer("🌿 پیام امید امروز (فقط برای امروز)\n\n" + text, reply_markup=jft_markup())
     except Exception as e:
-        log(f"JFT error: {e}")
+        log(f"JFT error: {e!r}")
         traceback.print_exc()
+        # گزارش علت خطا برای ادمین
+        if ADMIN_ID:
+            try:
+                await bot.send_message(chat_id=int(ADMIN_ID), text=f"🛠 خطای پیام امید امروز:\n{type(e).__name__}: {e}"[:3500])
+            except Exception:
+                pass
         await callback.message.answer(
             "⚠️ الان نتوانستم پیام امروز را دریافت کنم. لطفاً چند دقیقه بعد دوباره تلاش کنید.",
             reply_markup=jft_markup()
@@ -364,7 +376,7 @@ async def test_jft_handler(message: Message):
         text = await fetch_jft()
         await message.answer(f"✅ {len(text)} کاراکتر دریافت شد.\n\n{text[:1500]}")
     except Exception as e:
-        await message.answer(f"❌ خطا: {e}")
+        await message.answer(f"❌ خطا: {type(e).__name__}: {e}"[:3500])
 
 # ----- هندلرهای دکمه‌های شیشه‌ای -----
 @dp.callback_query(F.data == "back_to_main")
