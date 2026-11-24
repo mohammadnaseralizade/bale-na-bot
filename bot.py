@@ -28,8 +28,10 @@ bot = Bot(token=TOKEN)
 # =========================================================
 # بخش دیتابیس
 # =========================================================
+DB_PATH = os.getenv("DB_PATH", "bot_database.db")
+
 def init_db():
-    conn = sqlite3.connect('bot_database.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -38,23 +40,63 @@ def init_db():
             username TEXT
         )
     ''')
+    # 👇 جدول جدید برای ذخیره پیام‌های ارسالی به سازنده
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            first_name TEXT,
+            username TEXT,
+            text TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
     conn.close()
 
 def add_user(user_id, first_name, username):
-    conn = sqlite3.connect('bot_database.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('INSERT OR IGNORE INTO users (user_id, first_name, username) VALUES (?, ?, ?)', (user_id, first_name, username))
     conn.commit()
     conn.close()
 
 def get_user_count():
-    conn = sqlite3.connect('bot_database.db')
+    conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     cursor.execute('SELECT COUNT(*) FROM users')
     count = cursor.fetchone()[0]
     conn.close()
     return count
+
+def save_message(user_id, first_name, username, text):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'INSERT INTO messages (user_id, first_name, username, text) VALUES (?, ?, ?, ?)',
+        (user_id, first_name, username, text)
+    )
+    conn.commit()
+    conn.close()
+
+def get_message_count():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute('SELECT COUNT(*) FROM messages')
+    count = cursor.fetchone()[0]
+    conn.close()
+    return count
+
+def get_last_messages(limit=5):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute(
+        'SELECT id, user_id, first_name, username, text, created_at '
+        'FROM messages ORDER BY id DESC LIMIT ?', (limit,)
+    )
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
 
 init_db()
 
@@ -89,7 +131,6 @@ def main_inline_keyboard() -> InlineKeyboardBuilder:
     kb.button(text="📊 روزشمار پاکی", url="https://nairan.org/fa/cleanlinesscalendar")
     kb.button(text="🌿 پیام امید امروز", callback_data="daily_quote")
     
-    # 👇 متن دکمه دقیقاً طبق درخواست شما تغییر کرد
     kb.button(text="✉️ ارتباط با کنفرانس خدمات جهانی NA", callback_data="global_services")
     kb.button(text="🤫 ارسال پیام به سازنده", callback_data="anon_msg")
     
@@ -123,12 +164,14 @@ user_states = {}
 
 # =========================================================
 # هندلرها
+# نکته: هندلر عمومی پیام متنی باید آخر از همه ثبت شود
 # =========================================================
 @dp.message(CommandStart())
 async def start_handler(message: Message):
     user = message.from_user
-    if user:
-        add_user(user.id, user.first_name, user.username)
+    if not user:
+        return
+    add_user(user.id, user.first_name, user.username)
     
     user_states.pop(user.id, None)
     await message.answer("در حال بارگذاری منو...", reply_markup=ReplyKeyboardRemove())
@@ -139,48 +182,32 @@ async def stats_handler(message: Message):
     user = message.from_user
     if user and str(user.id) == str(ADMIN_ID):
         count = get_user_count()
-        await message.answer(f"📊 آمار ربات:\n\n👥 تعداد کل اعضای ربات: **{count}** نفر")
+        msg_count = get_message_count()
+        await message.answer(
+            f"📊 آمار ربات:\n\n"
+            f"👥 تعداد کل اعضای ربات: **{count}** نفر\n"
+            f"📩 تعداد پیام‌های دریافتی: **{msg_count}**"
+        )
 
-@dp.callback_query(F.data == "back_to_main")
-async def back_to_main_handler(callback: CallbackQuery):
-    user_states.pop(callback.from_user.id, None)
-    await callback.message.edit_text(WELCOME_TEXT, reply_markup=main_inline_keyboard().as_markup())
-    await callback.answer()
-
-# ----- هندلر دریافت متن (پیام برای سازنده) -----
-@dp.message()
-async def handle_text_inputs(message: Message):
+# 👇 دستور جدید: نمایش آخرین پیام‌ها برای ادمین
+@dp.message(Command("messages"))
+async def messages_handler(message: Message):
     user = message.from_user
-    if not user: return
-    
-    state = user_states.get(user.id)
-
-    if state == "waiting_for_admin_msg":
-        user_states.pop(user.id, None)
-        
-        if not ADMIN_ID:
-            await message.answer("⚠️ متاسفانه ارسال پیام به سازنده در حال حاضر غیرفعال است.")
-            return
-            
-        try:
-            # 👇 ساخت متن پیام همراه با اطلاعات فرستنده
-            sender_info = (
-                f"📩 **پیام جدید از طرف کاربر:**\n\n"
-                f"👤 نام: {user.first_name}\n"
-                f"🔗 نام کاربری: @{user.username if user.username else 'ندارد'}\n"
-                f"🆔 آیدی عددی: `{user.id}`\n\n"
-                f"📝 **متن پیام:**\n{message.text}\n\n"
-                f"---\n"
-                f"💡 برای پاسخ به این کاربر، روی آیدی عددی بالا کلیک کنید یا از دستور زیر استفاده کنید:\n"
-                f"`/reply {user.id} متن پاسخ شما`"
-            )
-            
-            await bot.send_message(chat_id=ADMIN_ID, text=sender_info)
-            await message.answer("✅ پیام شما با موفقیت برای سازنده ارسال شد.", reply_markup=main_inline_keyboard().as_markup())
-        except Exception as e:
-            log(f"Error sending msg to admin: {e}")
-            await message.answer("❌ خطا در ارسال پیام. لطفاً بعداً تلاش کنید.")
+    if not user or str(user.id) != str(ADMIN_ID):
         return
+    rows = get_last_messages(5)
+    if not rows:
+        await message.answer("هنوز پیامی ثبت نشده است.")
+        return
+    parts = []
+    for r in rows:
+        _id, uid, fname, uname, text, created = r
+        parts.append(
+            f"#{_id} | {created}\n"
+            f"👤 {fname} (@{uname if uname else 'ندارد'}) | 🆔 {uid}\n"
+            f"{text}"
+        )
+    await message.answer("📩 آخرین پیام‌ها:\n\n" + "\n\n------\n\n".join(parts))
 
 @dp.message(Command("reply"))
 async def admin_reply_handler(message: Message):
@@ -193,6 +220,12 @@ async def admin_reply_handler(message: Message):
         await message.answer("پاسخ با موفقیت ارسال شد.")
     except Exception:
         await message.answer("فرمت اشتباه است. استفاده: /reply USER_ID TEXT")
+
+@dp.callback_query(F.data == "back_to_main")
+async def back_to_main_handler(callback: CallbackQuery):
+    user_states.pop(callback.from_user.id, None)
+    await callback.message.edit_text(WELCOME_TEXT, reply_markup=main_inline_keyboard().as_markup())
+    await callback.answer()
 
 # ----- پیام امید روزانه -----
 @dp.callback_query(F.data == "daily_quote")
@@ -220,6 +253,51 @@ async def anon_msg_handler(callback: CallbackQuery):
 async def global_services_handler(callback: CallbackQuery):
     await callback.message.edit_text(EMAIL_TEXT, reply_markup=email_inline_keyboard().as_markup())
     await callback.answer()
+
+# ----- هندلر دریافت متن (پیام برای سازنده) - باید آخرین هندلر پیام باشد -----
+@dp.message()
+async def handle_text_inputs(message: Message):
+    user = message.from_user
+    if not user: return
+    
+    state = user_states.get(user.id)
+
+    if state == "waiting_for_admin_msg":
+        user_states.pop(user.id, None)
+
+        if not message.text:
+            user_states[user.id] = "waiting_for_admin_msg"
+            await message.answer("⚠️ لطفاً پیام خود را به صورت متن بنویسید.")
+            return
+
+        # 👇 ذخیره پیام در دیتابیس (قبل از ارسال به ادمین)
+        try:
+            save_message(user.id, user.first_name, user.username, message.text)
+        except Exception as e:
+            log(f"Error saving message: {e}")
+        
+        if not ADMIN_ID:
+            await message.answer("⚠️ متاسفانه ارسال پیام به سازنده در حال حاضر غیرفعال است.")
+            return
+            
+        try:
+            sender_info = (
+                f"📩 **پیام جدید از طرف کاربر:**\n\n"
+                f"👤 نام: {user.first_name}\n"
+                f"🔗 نام کاربری: @{user.username if user.username else 'ندارد'}\n"
+                f"🆔 آیدی عددی: `{user.id}`\n\n"
+                f"📝 **متن پیام:**\n{message.text}\n\n"
+                f"---\n"
+                f"💡 برای پاسخ به این کاربر، از دستور زیر استفاده کنید:\n"
+                f"`/reply {user.id} متن پاسخ شما`"
+            )
+            
+            await bot.send_message(chat_id=ADMIN_ID, text=sender_info)
+            await message.answer("✅ پیام شما با موفقیت برای سازنده ارسال شد.", reply_markup=main_inline_keyboard().as_markup())
+        except Exception as e:
+            log(f"Error sending msg to admin: {e}")
+            await message.answer("❌ خطا در ارسال پیام. لطفاً بعداً تلاش کنید.")
+        return
 
 # =========================================================
 # اجرا
