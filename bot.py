@@ -35,8 +35,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             first_name TEXT,
-            username TEXT,
-            clean_date TEXT
+            username TEXT
         )
     ''')
     conn.commit()
@@ -48,21 +47,6 @@ def add_user(user_id, first_name, username):
     cursor.execute('INSERT OR IGNORE INTO users (user_id, first_name, username) VALUES (?, ?, ?)', (user_id, first_name, username))
     conn.commit()
     conn.close()
-
-def update_clean_date(user_id, date_str):
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    cursor.execute('UPDATE users SET clean_date = ? WHERE user_id = ?', (date_str, user_id))
-    conn.commit()
-    conn.close()
-
-def get_clean_date(user_id):
-    conn = sqlite3.connect('bot_database.db')
-    cursor = conn.cursor()
-    cursor.execute('SELECT clean_date FROM users WHERE user_id = ?', (user_id,))
-    res = cursor.fetchone()
-    conn.close()
-    return res[0] if res else None
 
 def get_user_count():
     conn = sqlite3.connect('bot_database.db')
@@ -101,25 +85,34 @@ EMAIL_TEXT = (
 def main_inline_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     kb.button(text="اطلاع از جلسات آنلاین", url="https://nairan1.org/onlinemeeting/")
-    
-    # 👇 دکمه جستجوی حضوری مستقیماً به لینک سایت وصل شد
     kb.button(text="🔍 جستجوی جلسات حضوری", url="https://nairan.org/fa/meetings")
-    
-    kb.button(text="📊 ثبت روزهای پاکی", callback_data="clean_time")
+    kb.button(text="📊 روزشمار پاکی", url="https://nairan.org/fa/cleanlinesscalendar")
     kb.button(text="🌿 پیام امید امروز", callback_data="daily_quote")
     kb.button(text="✉️ ارتباط با خدمات جهانی", callback_data="global_services")
     kb.button(text="🤫 ارسال پیام ناشناس به کمیته", callback_data="anon_msg")
     
-    kb.adjust(1, 1, 2, 2, 1)
+    kb.adjust(1, 1, 1, 2, 1)
     return kb
 
 def email_inline_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
+    # لیست کامل دکمه‌های ایمیل (بدون فروشگاه)
     kb.button(text="اطلاعات عمومی و فلووشیپ", url="mailto:fsmail@na.org")
     kb.button(text="خدمات مشتری (سفارشات)", url="mailto:customer_service@na.org")
     kb.button(text="هیئت جهانی (World Board)", url="mailto:worldboard@na.org")
+    kb.button(text="منابع انسانی (HR)", url="mailto:hrp@na.org")
+    kb.button(text="روابط عمومی (PR)", url="mailto:pr@na.org")
+    kb.button(text="بیمارستان‌ها و موسسات (H&I)", url="mailto:handi@na.org")
+    kb.button(text="وب‌سایت (Webmaster)", url="mailto:webmaster@na.org")
+    kb.button(text="رویدادها و کنوانسیون‌ها", url="mailto:events@na.org")
+    kb.button(text="مجله The NA Way", url="mailto:naway@na.org")
+    kb.button(text="کمک‌های مالی", url="mailto:contributions@na.org")
+    kb.button(text="فرصت‌های شغلی", url="mailto:jobs@na.org")
+    
     kb.button(text="🔙 بازگشت به منوی اصلی", callback_data="back_to_main")
-    kb.adjust(1, 1, 1, 1)
+    
+    # چیدمان دو ستونه برای ۱۱ دکمه بالا و دکمه بازگشت در پایین
+    kb.adjust(2, 2, 2, 2, 2, 1, 1)
     return kb
 
 # =========================================================
@@ -153,52 +146,13 @@ async def back_to_main_handler(callback: CallbackQuery):
     await callback.message.edit_text(WELCOME_TEXT, reply_markup=main_inline_keyboard().as_markup())
     await callback.answer()
 
-# ----- محاسبه روزهای پاکی -----
-@dp.callback_query(F.data == "clean_time")
-async def clean_time_handler(callback: CallbackQuery):
-    user_id = callback.from_user.id
-    user_states[user_id] = "waiting_for_date"
-    await callback.message.edit_text(
-        "📅 لطفاً تاریخ شروع پاکی خود را به شمسی و با فرمت **YYYY/MM/DD** ارسال کنید.\n"
-        "مثال: `1402/05/12`\n"
-        "برای انصراف دستور /start را بزنید."
-    )
-    await callback.answer()
-
+# ----- هندلر دریافت متن (برای پیام ناشناس) -----
 @dp.message()
 async def handle_text_inputs(message: Message):
     user = message.from_user
     if not user: return
     
     state = user_states.get(user.id)
-
-    if state == "waiting_for_date":
-        try:
-            date_str = message.text.strip()
-            parts = date_str.split("/")
-            if len(parts) != 3: raise ValueError
-            
-            year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
-            total_days_passed = (year - 1402) * 365 + (month - 1) * 30 + day
-            today_total = (1402 - 1402) * 365 + (9 - 1) * 30 + 1 
-            
-            days_clean = today_total - total_days_passed
-            
-            if days_clean < 0:
-                await message.answer("تاریخ وارد شده در آینده است! لطفاً تاریخ گذشته را وارد کنید.")
-                return
-
-            update_clean_date(user.id, date_str)
-            user_states.pop(user.id, None)
-            
-            await message.answer(
-                f"🌱 تبریک می‌گویم!\nشما از تاریخ {date_str} تاکنون حدوداً **{days_clean}** روز پاک هستید.\n"
-                f"به مسیر پر از امید خود ادامه دهید. ❤️",
-                reply_markup=main_inline_keyboard().as_markup()
-            )
-        except Exception:
-            await message.answer("❌ فرمت تاریخ اشتباه است. لطفاً دقیقاً مانند مثال (1402/05/12) بفرستید.")
-        return
 
     if state == "waiting_for_anon_msg":
         user_states.pop(user.id, None)
