@@ -4,7 +4,6 @@ import traceback
 import asyncio
 import sqlite3
 import random
-from openai import AsyncOpenAI
 
 from baleio import Bot, Dispatcher, F
 from baleio.filters import CommandStart, Command
@@ -20,9 +19,9 @@ log("🚀 شروع برنامه بله...")
 # تنظیمات و کلیدها
 # =========================================================
 TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = os.getenv("ADMIN_ID") 
+ADMIN_ID = os.getenv("ADMIN_ID")
 AI_API_KEY = os.getenv("AI_API_KEY")
-AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.avalai.ir/v1") 
+AI_BASE_URL = os.getenv("AI_BASE_URL", "https://api.avalai.ir/v1")
 
 if not TOKEN:
     log("❌ خطا: متغیر محیطی BOT_TOKEN تنظیم نشده است.")
@@ -31,8 +30,21 @@ if not TOKEN:
 dp = Dispatcher()
 bot = Bot(token=TOKEN)
 
-# راه‌اندازی کلاینت هوش مصنوعی
-ai_client = AsyncOpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
+# =========================================================
+# راه‌اندازی کلاینت هوش مصنوعی (ایمن)
+# اگر پکیج openai نصب نباشد یا کلید تنظیم نشده باشد، ربات بدون AI بالا می‌آید
+# =========================================================
+ai_client = None
+if AI_API_KEY:
+    try:
+        from openai import AsyncOpenAI
+        ai_client = AsyncOpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
+        log("✅ کلاینت هوش مصنوعی آماده شد.")
+    except Exception:
+        log("⚠️ راه‌اندازی هوش مصنوعی ناموفق بود (پکیج openai نصب است؟):")
+        traceback.print_exc()
+else:
+    log("⚠️ AI_API_KEY تنظیم نشده؛ گفتگوی هوشمند غیرفعال است.")
 
 # =========================================================
 # بخش دیتابیس
@@ -140,15 +152,18 @@ SYSTEM_PROMPT = (
 # کیبوردها
 # =========================================================
 def main_reply_keyboard() -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(KeyboardButton("اطلاع از جلسات آنلاین"))
-    kb.row(KeyboardButton("🔍 جستجوی جلسات حضوری"))
-    kb.row(KeyboardButton("📊 روزشمار پاکی"))
-    kb.row(KeyboardButton("🌿 پیام امید امروز"))
-    kb.row(KeyboardButton("✉️ ارتباط با کنفرانس خدمات جهانی NA"))
-    kb.row(KeyboardButton("🤫 ارسال پیام به سازنده"))
-    kb.row(KeyboardButton("🤖 گفتگوی هوشمند")) 
-    return kb
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="اطلاع از جلسات آنلاین")],
+            [KeyboardButton(text="🔍 جستجوی جلسات حضوری")],
+            [KeyboardButton(text="📊 روزشمار پاکی")],
+            [KeyboardButton(text="🌿 پیام امید امروز")],
+            [KeyboardButton(text="✉️ ارتباط با کنفرانس خدمات جهانی NA")],
+            [KeyboardButton(text="🤫 ارسال پیام به سازنده")],
+            [KeyboardButton(text="🤖 گفتگوی هوشمند")],
+        ],
+        resize_keyboard=True,
+    )
 
 def email_inline_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
@@ -179,13 +194,17 @@ ai_chat_history = {}
 @dp.message(CommandStart())
 async def start_handler(message: Message):
     user = message.from_user
-    if not user: return
-    add_user(user.id, user.first_name, user.username)
-    
-    user_states.pop(user.id, None)
-    ai_chat_history.pop(user.id, None)
-    await message.answer("در حال بارگذاری منو...", reply_markup=ReplyKeyboardRemove())
-    await message.answer(WELCOME_TEXT, reply_markup=main_reply_keyboard())
+    if not user:
+        return
+    try:
+        add_user(user.id, user.first_name, user.username)
+        user_states.pop(user.id, None)
+        ai_chat_history.pop(user.id, None)
+        await message.answer("در حال بارگذاری منو...", reply_markup=ReplyKeyboardRemove())
+        await message.answer(WELCOME_TEXT, reply_markup=main_reply_keyboard())
+    except Exception:
+        traceback.print_exc()
+        await message.answer("❌ خطا در نمایش منو. لطفاً دوباره /start را بزنید.")
 
 @dp.message(Command("stats"))
 async def stats_handler(message: Message):
@@ -202,7 +221,8 @@ async def stats_handler(message: Message):
 @dp.message(Command("messages"))
 async def messages_handler(message: Message):
     user = message.from_user
-    if not user or str(user.id) != str(ADMIN_ID): return
+    if not user or str(user.id) != str(ADMIN_ID):
+        return
     rows = get_last_messages(5)
     if not rows:
         await message.answer("هنوز پیامی ثبت نشده است.")
@@ -219,7 +239,8 @@ async def messages_handler(message: Message):
 
 @dp.message(Command("reply"))
 async def admin_reply_handler(message: Message):
-    if not message.from_user or str(message.from_user.id) != str(ADMIN_ID): return
+    if not message.from_user or str(message.from_user.id) != str(ADMIN_ID):
+        return
     parts = (message.text or "").split(maxsplit=2)
     if len(parts) < 3:
         await message.answer("فرمت: /reply USER_ID TEXT\nمثال: /reply 123456789 سلام")
@@ -256,7 +277,6 @@ async def inperson_meetings(message: Message):
 async def clean_calendar(message: Message):
     await message.answer("لینک روزشمار پاکی:\nhttps://nairan.org/fa/cleanlinesscalendar")
 
-# 👇 دکمه پیام امید امروز به لینک تغییر کرد
 @dp.message(F.text == "🌿 پیام امید امروز")
 async def daily_quote_msg(message: Message):
     text = (
@@ -264,20 +284,23 @@ async def daily_quote_msg(message: Message):
         "برای مطالعه متن امروز و مشاهده تقویم، روی لینک زیر کلیک کنید:\n"
         "👉 https://jft.nairan1.org/"
     )
-    await message.answer(text, disable_web_page_preview=False)
+    await message.answer(text)
 
 @dp.message(F.text == "✉️ ارتباط با کنفرانس خدمات جهانی NA")
 async def global_services_msg(message: Message):
     await message.answer(EMAIL_TEXT, reply_markup=email_inline_keyboard().as_markup())
 
-# 👇 متن اضافی حذف شد
 @dp.message(F.text == "🤫 ارسال پیام به سازنده")
 async def anon_msg_msg(message: Message):
+    if not message.from_user:
+        return
     user_states[message.from_user.id] = "waiting_for_admin_msg"
     await message.answer("📝 لطفاً متن پیام خود را برای سازنده بنویسید.")
 
 @dp.message(F.text == "🤖 گفتگوی هوشمند")
 async def activate_ai(message: Message):
+    if not message.from_user:
+        return
     user_id = message.from_user.id
     user_states[user_id] = "waiting_for_ai"
     ai_chat_history[user_id] = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -288,22 +311,19 @@ async def activate_ai(message: Message):
         "برای خروج از این بخش، دکمه «/start» را بزنید."
     )
 
-# ----- هندلر اصلی برای دریافت متن‌ها -----
+# ----- هندلر اصلی برای دریافت متن‌ها (باید آخرین هندلر پیام باشد) -----
 @dp.message(F.text & ~F.text.startswith('/'))
 async def handle_text_inputs(message: Message):
     user = message.from_user
-    if not user: return
-    
+    if not user:
+        return
+
     user_id = user.id
     state = user_states.get(user_id)
 
     # 1. اگر در حالت ارسال پیام به ادمین است
     if state == "waiting_for_admin_msg":
         user_states.pop(user_id, None)
-        if not message.text:
-            user_states[user_id] = "waiting_for_admin_msg"
-            await message.answer("⚠️ لطفاً پیام خود را به صورت متن بنویسید.")
-            return
         try:
             save_message(user.id, user.first_name, user.username, message.text)
         except Exception as e:
@@ -331,23 +351,24 @@ async def handle_text_inputs(message: Message):
 
     # 2. اگر در حالت گفتگو با هوش مصنوعی است
     if state == "waiting_for_ai":
-        if not AI_API_KEY:
-            await message.answer("⚠️ سرویس هوش مصنوعی در حال حاضر غیرفعال است (کلید API تنظیم نشده).")
+        if ai_client is None:
+            await message.answer("⚠️ سرویس هوش مصنوعی در حال حاضر غیرفعال است.")
             return
         try:
-            ai_chat_history[user_id].append({"role": "user", "content": message.text})
-            if len(ai_chat_history[user_id]) > 11:
-                ai_chat_history[user_id] = [ai_chat_history[user_id][0]] + ai_chat_history[user_id][-10:]
+            history = ai_chat_history.setdefault(user_id, [{"role": "system", "content": SYSTEM_PROMPT}])
+            history.append({"role": "user", "content": message.text})
+            if len(history) > 11:
+                history[:] = [history[0]] + history[-10:]
 
             response = await ai_client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=ai_chat_history[user_id],
+                messages=history,
                 max_tokens=500,
                 temperature=0.7
             )
             ai_reply = response.choices[0].message.content
-            ai_chat_history[user_id].append({"role": "assistant", "content": ai_reply})
-            
+            history.append({"role": "assistant", "content": ai_reply})
+
             await message.answer(ai_reply)
         except Exception as e:
             log(f"AI Error: {e}")
