@@ -472,6 +472,56 @@ def extract_online(html: str) -> str:
     text = root.get_text("\n", strip=True)
     return _clean_text(text)
 
+def extract_online_groups(html: str) -> str:
+    """از صفحه فقط «نام گروه + توضیحات + لینک» هر جلسه را برمی‌گرداند."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup(["script", "style", "noscript", "nav", "header", "footer", "form", "svg", "select"]):
+        tag.decompose()
+    root = None
+    if ONLINE_SELECTOR:
+        root = soup.select_one(ONLINE_SELECTOR)
+    if root is None:
+        root = soup.find("main") or soup.body or soup
+
+    def good_href(h: str) -> bool:
+        h = (h or "").strip()
+        if not h.lower().startswith(("http://", "https://")):
+            return False
+        return h.rstrip("/") != ONLINE_URL.rstrip("/")
+
+    def distinct_links(node):
+        return {a["href"].strip() for a in node.find_all("a", href=True) if good_href(a["href"])}
+
+    groups, seen = [], set()
+    for a in root.find_all("a", href=True):
+        href = a["href"].strip()
+        if not good_href(href) or href in seen:
+            continue
+        # بالا رفتن تا کوچک‌ترین «کارت» که فقط یک لینک دارد و خیلی بلند نیست
+        card, node = a, a
+        while node.parent is not None and node.parent.name not in ("body", "html", "[document]"):
+            parent = node.parent
+            if len(distinct_links(parent)) > 1 or len(parent.get_text(" ", strip=True)) > 700:
+                break
+            card, node = parent, parent
+        lines = [ln.strip() for ln in card.get_text("\n", strip=True).splitlines() if ln.strip()]
+        btn = a.get_text(" ", strip=True)
+        if len(lines) > 1 and btn and len(btn) <= 15 and btn in lines:
+            lines.remove(btn)          # متن دکمه‌هایی مثل «ورود» یا «لینک جلسه»
+        if not lines:
+            continue
+        name = lines[0]
+        desc = " ".join(lines[1:])
+        desc = re.sub(r"\s+", " ", desc)[:300]
+        seen.add(href)
+        item = f"🔹 {name}"
+        if desc:
+            item += f"\n{desc}"
+        item += f"\n🔗 {href}"
+        groups.append(item)
+    return "\n\n".join(groups)
+
 def split_text(text: str, limit: int = 3500):
     chunks, cur = [], ""
     for line in text.split("\n"):
@@ -492,12 +542,12 @@ async def fetch_online() -> str:
         resp = await client.get(ONLINE_URL, headers={"User-Agent": "Mozilla/5.0"})
         resp.raise_for_status()
         html_text = resp.text
-        text = extract_online(html_text)
-    if len(text) < 80:
+        text = extract_online_groups(html_text)
+    if len(text) < 20:
         api_hints = sorted(set(re.findall(r"""["'](/?[\w\-./]*api[\w\-./?=&]*)["']""", html_text)))[:8]
         scripts = re.findall(r'<script[^>]+src=["\']([^"\']+)["\']', html_text)[:6]
         raise ValueError(
-            f"لیست کافی استخراج نشد | status={resp.status_code} | html_len={len(html_text)} | "
+            f"گروهی با لینک پیدا نشد | status={resp.status_code} | html_len={len(html_text)} | "
             f"text_len={len(text)} | api_hints={api_hints} | scripts={scripts}"
         )
     _online_cache["text"] = text
