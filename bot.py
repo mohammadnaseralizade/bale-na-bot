@@ -1067,6 +1067,31 @@ async def ai_menu_handler(callback: CallbackQuery):
     await callback.answer()
 
 # ----- توابع کمکی هوش مصنوعی و صوت -----
+async def report_admin(text: str):
+    """گزارش خطا برای ادمین (برای عیب‌یابی)."""
+    if ADMIN_ID:
+        try:
+            await bot.send_message(chat_id=int(ADMIN_ID), text=text[:3500])
+        except Exception:
+            pass
+
+async def download_bale_file(file_path: str) -> bytes:
+    """دانلود فایل از بله: اول با کتابخانه، اگر نشد مستقیم از سرور بله."""
+    try:
+        buf = io.BytesIO()
+        await bot.download_file(file_path, buf)
+        data = buf.getvalue()
+        if data:
+            return data
+    except Exception as e:
+        log(f"download_file failed: {e!r}")
+    import httpx
+    url = file_path if file_path.startswith("http") else f"https://tapi.bale.ai/file/bot{TOKEN}/{file_path}"
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+        r = await client.get(url)
+        r.raise_for_status()
+        return r.content
+
 async def ask_ai(user_id: int, text: str) -> str:
     history = ai_chat_history.setdefault(user_id, [{"role": "system", "content": SYSTEM_PROMPT}])
     history.append({"role": "user", "content": text})
@@ -1085,7 +1110,7 @@ async def ask_ai(user_id: int, text: str) -> str:
 async def voice_to_text(file_bytes: bytes) -> str:
     result = await ai_client.audio.transcriptions.create(
         model=AI_STT_MODEL,
-        file=("voice.ogg", file_bytes),
+        file=("voice.ogg", file_bytes, "audio/ogg"),
         language="fa",
     )
     return (result.text or "").strip()
@@ -1133,23 +1158,26 @@ async def handle_voice(message: Message):
         await message.answer(f"⚠️ لطفاً ویس کوتاه‌تر از {MAX_VOICE_SECONDS} ثانیه بفرستید.")
         return
 
+    stage = "download"
     try:
         # 1) دانلود ویس
         file = await bot.get_file(message.voice.file_id)
-        buf = io.BytesIO()
-        await bot.download_file(file.file_path, buf)
+        audio_bytes = await download_bale_file(file.file_path)
 
         # 2) ویس -> متن
-        user_text = await voice_to_text(buf.getvalue())
+        stage = "stt"
+        user_text = await voice_to_text(audio_bytes)
         if not user_text:
             await message.answer("🎙 متوجه صدا نشدم، لطفاً دوباره و واضح‌تر بفرستید.")
             return
 
         # 3) پاسخ هوش مصنوعی
+        stage = "chat"
         ai_reply = await ask_ai(user.id, user_text)
     except Exception as e:
-        log(f"Voice AI Error: {e}")
+        log(f"Voice AI Error [{stage}]: {e!r}")
         traceback.print_exc()
+        await report_admin(f"🛠 خطای ویس (مرحله {stage}):\n{type(e).__name__}: {e}")
         await message.answer("❌ متاسفانه نتوانستم ویس را پردازش کنم. لطفاً بعداً تلاش کنید یا پیام متنی بفرستید.")
         return
 
@@ -1215,6 +1243,7 @@ async def handle_text_inputs(message: Message):
             await message.answer(ai_reply)
         except Exception as e:
             log(f"AI Error: {e}")
+            await report_admin(f"🛠 خطای گفتگوی هوشمند:\n{type(e).__name__}: {e}")
             await message.answer("❌ متاسفانه در حال حاضر نمی‌توانم پاسخ دهم. لطفاً بعداً تلاش کنید یا /start را بزنید.")
         return
 
@@ -1830,6 +1859,35 @@ async def clean_callback_handler(callback: CallbackQuery):
     except Exception:
         traceback.print_exc()
         await callback.message.answer("❌ خطایی رخ داد. لطفاً دوباره از منو «📊 روزشمار پاکی» را بزنید.", reply_markup=main_markup())
+
+@dp.message(Command("testai"))
+async def test_ai_handler(message: Message):
+    """ویژه ادمین: آزمایش گفتگو، تبدیل متن به ویس و ویس به متن."""
+    if not message.from_user or str(message.from_user.id) != str(ADMIN_ID):
+        return
+    if ai_client is None:
+        await message.answer("❌ کلاینت هوش مصنوعی ساخته نشده (AI_API_KEY یا پکیج openai را بررسی کنید).")
+        return
+    rep = [f"base_url={AI_BASE_URL}\nchat={AI_CHAT_MODEL} stt={AI_STT_MODEL} tts={AI_TTS_MODEL} voice={AI_TTS_VOICE}"]
+    try:
+        r = await ai_client.chat.completions.create(
+            model=AI_CHAT_MODEL, messages=[{"role": "user", "content": "سلام"}], max_tokens=20)
+        rep.append("✅ chat: " + (r.choices[0].message.content or "")[:60])
+    except Exception as e:
+        rep.append(f"❌ chat: {type(e).__name__}: {e}")
+    audio = None
+    try:
+        audio = await text_to_voice("سلام، حال شما چطور است؟")
+        rep.append(f"✅ tts: {len(audio)} bytes")
+    except Exception as e:
+        rep.append(f"❌ tts: {type(e).__name__}: {e}")
+    if audio:
+        try:
+            txt = await voice_to_text(audio)
+            rep.append(f"✅ stt: {txt[:80]}")
+        except Exception as e:
+            rep.append(f"❌ stt: {type(e).__name__}: {e}")
+    await message.answer("\n\n".join(rep)[:3500])
 
 # =========================================================
 # اجرا
