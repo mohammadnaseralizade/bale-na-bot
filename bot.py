@@ -170,7 +170,7 @@ def main_inline_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     # دکمه‌های لینک‌دار: مستقیم لینک را باز می‌کنند
     kb.button(text="💻 اطلاع از جلسات آنلاین", callback_data="menu_online")
-    kb.button(text="🔍 جستجوی جلسات حضوری", url="https://nairan.org/fa/meetings")
+    kb.button(text="🔍 جستجوی جلسات حضوری", callback_data="menu_inperson")
     kb.button(text="📊 روزشمار پاکی", url="https://nairan.org/fa/cleanlinesscalendar")
     kb.button(text="🌿 پیام امید امروز", callback_data="menu_jft")
     # دکمه‌های عملیاتی
@@ -1200,6 +1200,11 @@ async def handle_text_inputs(message: Message):
             await message.answer("❌ خطا در ارسال پیام. لطفاً بعداً تلاش کنید.", reply_markup=main_markup())
         return
 
+    # 1.5 جستجوی جلسات حضوری با نام شهر/روستا
+    if state == "waiting_for_location":
+        await inperson_by_text(message, message.text)
+        return
+
     # 2. گفتگو با هوش مصنوعی (متنی)
     if state == "waiting_for_ai":
         if ai_client is None:
@@ -1340,6 +1345,266 @@ async def debug_meetings2_handler(message: Message):
                 await probe("byLocation " + str(params), loc, params)
             await probe("byRegion", base.rstrip("/") + "/byRegion")
 
+        for chunk in split_text("\n\n".join(rep), 3500):
+            await message.answer(chunk)
+    except Exception as e:
+        await message.answer(f"❌ خطا: {type(e).__name__}: {e}"[:3500])
+
+# =========================================================
+# جلسات حضوری (لوکیشن یا نام شهر/روستا)
+# =========================================================
+import json
+import math
+
+INPERSON_RADIUS_KM = float(os.getenv("INPERSON_RADIUS_KM", "20"))   # شعاع جست‌وجو
+INPERSON_MAX = int(os.getenv("INPERSON_MAX", "8"))                  # حداکثر تعداد جلسه در پاسخ
+GEOCODE_URL = os.getenv("GEOCODE_URL", "https://nominatim.openstreetmap.org/search")
+
+_DAY_NAMES = {0: "شنبه", 1: "یک‌شنبه", 2: "دوشنبه", 3: "سه‌شنبه", 4: "چهارشنبه", 5: "پنج‌شنبه", 6: "جمعه"}
+_SEX_NAMES = {0: "بانوان", 1: "آقایان", 2: "مختلط"}
+_KNOWN_FIELDS = {
+    "address": "📍", "addr": "📍", "full_address": "📍", "phone": "📞", "tel": "📞", "mobile": "📞",
+    "feature": "✨", "features": "✨", "property": "✨", "properties": "✨",
+}
+_SKIP_KEYS = {"id", "lat", "lng", "latitude", "longitude", "name", "created_at", "updated_at", "deleted_at", "icon", "color"}
+
+def _hav_km(lat1, lon1, lat2, lon2) -> float:
+    r = 6371.0
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+def _scalar(key: str, val) -> str:
+    k = (key or "").lower()
+    if isinstance(val, bool):
+        return ""
+    if k in ("day", "weekday", "day_id") and str(val).strip().isdigit() and int(val) in _DAY_NAMES:
+        return _DAY_NAMES[int(val)]
+    if k in ("sex", "gender") and str(val).strip().lstrip("-").isdigit() and int(val) in _SEX_NAMES:
+        return _SEX_NAMES[int(val)]
+    return re.sub(r"\s+", " ", str(val)).strip()
+
+def _format_meeting_item(item: dict) -> str:
+    def first(keys):
+        for k in keys:
+            if item.get(k) not in (None, ""):
+                return _scalar(k, item[k])
+        return ""
+    name = first(("group_name", "name", "title"))
+    day = first(("day", "day_name", "day_title", "weekday"))
+    st, en = first(("start_time", "from", "start")), first(("end_time", "to", "end"))
+    sex = first(("sex", "gender", "sex_title"))
+    when = " ".join(x for x in (day, (f"{st}-{en}" if st and en else st)) if x)
+    parts = [x for x in (name, when, sex) if x]
+    if not parts:   # ساختار ناشناخته: همه مقدارهای ساده
+        parts = [_scalar(k, v) for k, v in item.items()
+                 if k not in _SKIP_KEYS and not k.endswith("_id") and isinstance(v, (str, int, float)) and str(v).strip()]
+    return " | ".join(parts)
+
+def format_location(rec: dict, dist_km=None) -> str:
+    title = _scalar("name", rec.get("name") or rec.get("group_name") or "جلسه")
+    head = f"🔹 {title}"
+    if dist_km is not None:
+        head += f"  ({dist_km:.1f} کیلومتر)"
+    lines = [head]
+    for key, val in rec.items():
+        if key in _SKIP_KEYS or key.endswith("_id") or val in (None, "", [], {}):
+            continue
+        if isinstance(val, list) and val and all(isinstance(x, dict) for x in val):
+            for it in val[:8]:
+                t = _format_meeting_item(it)
+                if t:
+                    lines.append(f"🗓 {t}")
+        elif isinstance(val, list):
+            lines.append(f"{_KNOWN_FIELDS.get(key, '▫️')} " + "، ".join(_scalar(key, x) for x in val if x not in (None, "")))
+        elif isinstance(val, dict):
+            t = _format_meeting_item(val)
+            if t:
+                lines.append(f"▫️ {t}")
+        else:
+            s = _scalar(key, val)
+            if not s or len(s) > 250 or s.lower().startswith("http") or re.match(r"^\d{4}-\d{2}-\d{2}", s):
+                continue
+            lines.append(f"{_KNOWN_FIELDS.get(key, '▫️')} {s}")
+    try:
+        lines.append(f"🗺 https://maps.google.com/?q={float(rec['lat']):.6f},{float(rec['lng']):.6f}")
+    except Exception:
+        pass
+    return "\n".join(lines[:14])
+
+_nearby_cache = {}
+_all_loc_cache = {"t": 0.0, "recs": []}
+
+def _recs_from(data):
+    recs = data.get("locations") if isinstance(data, dict) else data
+    return [x for x in (recs or []) if isinstance(x, dict)]
+
+async def fetch_nearby(lat: float, lon: float):
+    key = (round(lat, 2), round(lon, 2))
+    now = time.time()
+    c = _nearby_cache.get(key)
+    if c and now - c[0] < 1800:
+        return c[1]
+    import httpx
+    async with httpx.AsyncClient(timeout=45, follow_redirects=True, headers={
+        "User-Agent": "Mozilla/5.0", "Accept": "application/json", "X-Requested-With": "XMLHttpRequest"}) as client:
+        r = await client.get(INPERSON_URL.rstrip("/") + "/byLocation", params={"latitude": lat, "longitude": lon})
+        r.raise_for_status()
+        recs = _recs_from(r.json())
+    if len(_nearby_cache) > 40:
+        _nearby_cache.clear()
+    _nearby_cache[key] = (now, recs)
+    return recs
+
+async def fetch_all_locations():
+    now = time.time()
+    if _all_loc_cache["recs"] and now - _all_loc_cache["t"] < 6 * 3600:
+        return _all_loc_cache["recs"]
+    import httpx
+    async with httpx.AsyncClient(timeout=120, follow_redirects=True, headers={
+        "User-Agent": "Mozilla/5.0", "Accept": "application/json", "X-Requested-With": "XMLHttpRequest"}) as client:
+        r = await client.get(INPERSON_URL.rstrip("/") + "/byRegion")
+        r.raise_for_status()
+        recs = _recs_from(r.json())
+    _all_loc_cache["t"], _all_loc_cache["recs"] = now, recs
+    return recs
+
+async def geocode_place(q: str):
+    """نام شهر/روستا -> (lat, lon, نام یافت‌شده)؛ اگر پیدا نشد None."""
+    import httpx
+    params = {"q": q, "format": "json", "limit": 1, "countrycodes": "ir", "accept-language": "fa"}
+    async with httpx.AsyncClient(timeout=15, headers={"User-Agent": "NA-Bale-Bot/1.0"}) as client:
+        r = await client.get(GEOCODE_URL, params=params)
+        r.raise_for_status()
+        arr = r.json()
+    if not arr:
+        return None
+    return float(arr[0]["lat"]), float(arr[0]["lon"]), (arr[0].get("display_name") or "")
+
+def pick_nearest(recs, lat, lon):
+    out = []
+    for r in recs:
+        try:
+            out.append((_hav_km(lat, lon, float(r["lat"]), float(r["lng"])), r))
+        except Exception:
+            continue
+    out.sort(key=lambda x: x[0])
+    near = [x for x in out if x[0] <= INPERSON_RADIUS_KM][:INPERSON_MAX]
+    return near, out[:3]
+
+async def send_results(message, header: str, items):
+    text = header + "\n\n" + "\n\n".join(items)
+    chunks = split_text(text, 3500)
+    for i, ch in enumerate(chunks):
+        if i == len(chunks) - 1:
+            await message.answer(ch, reply_markup=jft_markup())
+        else:
+            await message.answer(ch)
+
+async def send_nearby(message, lat: float, lon: float, label: str = ""):
+    recs = await fetch_nearby(lat, lon)
+    near, closest = pick_nearest(recs, lat, lon)
+    where = f" ({label})" if label else ""
+    if near:
+        await send_results(message, f"🏢 جلسات حضوری نزدیک شما{where} — تا {INPERSON_RADIUS_KM:g} کیلومتر",
+                           [format_location(r, d) for d, r in near])
+    elif closest:
+        await send_results(message, f"ℹ️ در شعاع {INPERSON_RADIUS_KM:g} کیلومتری{where} جلسه‌ای پیدا نشد. نزدیک‌ترین جلسات:",
+                           [format_location(r, d) for d, r in closest])
+    else:
+        await message.answer("ℹ️ جلسه‌ای برای این محدوده پیدا نشد.", reply_markup=jft_markup())
+
+async def inperson_by_text(message, query: str):
+    q = (query or "").strip()
+    if len(q) < 2 or len(q) > 60:
+        await message.answer("لطفاً نام شهر یا روستا را کوتاه و واضح بنویسید، یا لوکیشن خود را بفرستید.")
+        return
+    tmp = await message.answer("🔎 در حال جستجو…", reply_markup=ReplyKeyboardRemove())
+    try:
+        geo = None
+        try:
+            geo = await geocode_place(q)
+        except Exception as e:
+            log(f"Geocode error: {e!r}")
+        if geo:
+            label = geo[2].split("،")[0][:50] if geo[2] else q
+            await send_nearby(message, geo[0], geo[1], label)
+        else:
+            # راه دوم: جست‌وجوی متنی در فهرست همه جلسات
+            recs = await fetch_all_locations()
+            nq = _squash(q)
+            hits = [r for r in recs if nq in _squash(json.dumps(r, ensure_ascii=False))][:INPERSON_MAX]
+            if hits:
+                await send_results(message, f"🏢 جلسات حضوری «{q}»", [format_location(r) for r in hits])
+            else:
+                await message.answer("ℹ️ مکانی با این نام پیدا نشد. نام شهر را کامل‌تر بنویسید یا لوکیشن خود را بفرستید.")
+    except Exception as e:
+        log(f"In-person search error: {e!r}")
+        traceback.print_exc()
+        await message.answer("❌ الان نتوانستم لیست جلسات حضوری را دریافت کنم. لطفاً چند دقیقه بعد دوباره تلاش کنید.")
+    finally:
+        try:
+            await tmp.delete()
+        except Exception:
+            pass
+
+# ----- هندلرهای جلسات حضوری -----
+@dp.callback_query(F.data == "menu_inperson")
+async def inperson_menu_handler(callback: CallbackQuery):
+    user_states[callback.from_user.id] = "waiting_for_location"
+    await callback.answer()
+    text = (
+        "🏢 جستجوی جلسات حضوری\n\n"
+        "📍 لوکیشن خود را بفرستید (از دکمه پایین، یا از منوی پیوست 📎 گزینه «موقعیت مکانی»)\n"
+        "یا ✍️ نام شهر یا روستای خود را بنویسید.\n\n"
+        "برای خروج، دستور /start را بزنید."
+    )
+    try:
+        from baleio.types import ReplyKeyboardMarkup, KeyboardButton
+        kb = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="📍 ارسال موقعیت من", request_location=True)]],
+            resize_keyboard=True, one_time_keyboard=True,
+        )
+        await callback.message.answer(text, reply_markup=kb)
+    except Exception:
+        await callback.message.answer(text)
+
+@dp.message(F.location)
+async def handle_location(message: Message):
+    user = message.from_user
+    if not user:
+        return
+    if user_states.get(user.id) != "waiting_for_location":
+        await message.answer("📍 برای جستجوی جلسات حضوری، اول از منو دکمه «🔍 جستجوی جلسات حضوری» را بزنید.", reply_markup=main_markup())
+        return
+    loc = message.location
+    tmp = await message.answer("🔎 در حال جستجوی جلسات نزدیک شما…", reply_markup=ReplyKeyboardRemove())
+    try:
+        await send_nearby(message, float(loc.latitude), float(loc.longitude))
+    except Exception as e:
+        log(f"Location search error: {e!r}")
+        traceback.print_exc()
+        await message.answer("❌ الان نتوانستم لیست جلسات حضوری را دریافت کنم. لطفاً چند دقیقه بعد دوباره تلاش کنید.")
+    finally:
+        try:
+            await tmp.delete()
+        except Exception:
+            pass
+
+@dp.message(Command("debuglocation"))
+async def debug_location_handler(message: Message):
+    """ویژه ادمین: نمایش ساختار یک رکورد جلسه حضوری (نمونه: مرکز تهران)."""
+    if not message.from_user or str(message.from_user.id) != str(ADMIN_ID):
+        return
+    try:
+        recs = await fetch_nearby(35.6892, 51.3890)
+        near, _ = pick_nearest(recs, 35.6892, 51.3890)
+        rep = [f"records={len(recs)} within_{INPERSON_RADIUS_KM:g}km={len(near)}"]
+        if recs:
+            rep.append("keys: " + str(list(recs[0].keys())))
+            rep.append("RAW:\n" + json.dumps(recs[0], ensure_ascii=False)[:1500])
+            rep.append("FORMATTED:\n" + format_location(recs[0]))
         for chunk in split_text("\n\n".join(rep), 3500):
             await message.answer(chunk)
     except Exception as e:
