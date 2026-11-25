@@ -1261,6 +1261,90 @@ async def debug_meetings_handler(message: Message):
     except Exception as e:
         await message.answer(f"❌ خطا: {type(e).__name__}: {e}"[:3500])
 
+@dp.message(Command("debugmeetings2"))
+async def debug_meetings2_handler(message: Message):
+    """ویژه ادمین: بررسی فرم و آدرس‌های جست‌وجوی جلسات حضوری (آزمایش چند درخواست)."""
+    if not message.from_user or str(message.from_user.id) != str(ADMIN_ID):
+        return
+    import httpx
+    from bs4 import BeautifulSoup
+    base = INPERSON_URL
+    rep = []
+
+    def table_info(html):
+        soup = BeautifulSoup(html, "html.parser")
+        trs = soup.find_all("tr")
+        out = f"tr={len(trs)}"
+        for tr in trs[:3]:
+            cells = [re.sub(r"\s+", " ", c.get_text(" ", strip=True))[:40] for c in tr.find_all(["th", "td"])]
+            out += "\n  " + " | ".join(cells)
+        return out
+
+    try:
+        async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}) as client:
+            r = await client.get(base)
+            html = r.text
+            soup = BeautifulSoup(html, "html.parser")
+            rep.append("BASE " + table_info(html))
+
+            for f in soup.find_all("form"):
+                names = [x.get("name") for x in f.find_all(["input", "select"]) if x.get("name")]
+                rep.append(f"FORM action={f.get('action')} method={f.get('method')} fields={names[:20]}")
+
+            prov_id = None
+            for sel in soup.find_all("select"):
+                name = sel.get("name")
+                opts = [(o.get("value"), o.get_text(" ", strip=True)) for o in sel.find_all("option")]
+                rep.append(f"SELECT {name}: {len(opts)} options: " + ", ".join(f"{v}:{t}" for v, t in opts[:12]))
+                if name == "province_id" and not prov_id:
+                    for v, t in opts:
+                        if "تهران" in t and v:
+                            prov_id = v
+                            break
+
+            keys = ("byLocation", "byRegion", "$.ajax", "$.get", "$.post", "fetch(", "latitude", "lat", "lng", "province_id", "city_id")
+            seen = 0
+            for sc in soup.find_all("script"):
+                if sc.get("src"):
+                    continue
+                body = sc.string or sc.get_text() or ""
+                for k in keys:
+                    for m in list(re.finditer(re.escape(k), body))[:2]:
+                        rep.append(f"JS[{k}] … " + body[max(0, m.start() - 100): m.start() + 160].replace("\n", " ") + " …")
+                        seen += 1
+                    if seen >= 14:
+                        break
+                if seen >= 14:
+                    break
+
+            async def probe(label, url, params=None):
+                try:
+                    rr = await client.get(url, params=params)
+                    ct = rr.headers.get("content-type", "")
+                    body = rr.text
+                    info = f"PROBE {label}: {rr.status_code} {ct[:30]} len={len(body)}"
+                    if "json" in ct:
+                        info += " JSON: " + body[:300].replace("\n", " ")
+                    else:
+                        info += " " + table_info(body).replace("\n", " // ")[:300]
+                    rep.append(info)
+                except Exception as e:
+                    rep.append(f"PROBE {label}: error {type(e).__name__}")
+
+            await probe("search=تهران", base, {"search": "تهران"})
+            if prov_id:
+                await probe(f"province_id={prov_id}", base, {"province_id": prov_id})
+            loc = base.rstrip("/") + "/byLocation"
+            for params in ({"lat": 35.7, "lng": 51.4}, {"lat": 35.7, "long": 51.4},
+                           {"latitude": 35.7, "longitude": 51.4}, {"lat": 35.7, "lon": 51.4}):
+                await probe("byLocation " + str(params), loc, params)
+            await probe("byRegion", base.rstrip("/") + "/byRegion")
+
+        for chunk in split_text("\n\n".join(rep), 3500):
+            await message.answer(chunk)
+    except Exception as e:
+        await message.answer(f"❌ خطا: {type(e).__name__}: {e}"[:3500])
+
 # =========================================================
 # اجرا
 # =========================================================
