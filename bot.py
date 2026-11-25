@@ -171,7 +171,7 @@ def main_inline_keyboard() -> InlineKeyboardBuilder:
     # دکمه‌های لینک‌دار: مستقیم لینک را باز می‌کنند
     kb.button(text="💻 اطلاع از جلسات آنلاین", callback_data="menu_online")
     kb.button(text="🔍 جستجوی جلسات حضوری", callback_data="menu_inperson")
-    kb.button(text="📊 روزشمار پاکی", url="https://nairan.org/fa/cleanlinesscalendar")
+    kb.button(text="📊 روزشمار پاکی", callback_data="menu_clean")
     kb.button(text="🌿 پیام امید امروز", callback_data="menu_jft")
     # دکمه‌های عملیاتی
     kb.button(text="✉️ ارتباط با کنفرانس خدمات جهانی NA", callback_data="menu_email")
@@ -1646,6 +1646,190 @@ async def debug_location_handler(message: Message):
             await message.answer(chunk)
     except Exception as e:
         await message.answer(f"❌ خطا: {type(e).__name__}: {e}"[:3500])
+
+# =========================================================
+# روزشمار پاکی (انتخاب سال/ماه/روز با دکمه‌های شیشه‌ای)
+# =========================================================
+from datetime import date, datetime, timedelta, timezone
+
+JMONTHS = ["فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+           "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"]
+CLEAN_MAX_YEARS_BACK = int(os.getenv("CLEAN_MAX_YEARS_BACK", "60"))
+_FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+
+def fa_num(x) -> str:
+    return str(x).translate(_FA_DIGITS)
+
+def jalali_to_gregorian(jy: int, jm: int, jd: int):
+    jy += 1595
+    days = -355668 + (365 * jy) + ((jy // 33) * 8) + (((jy % 33) + 3) // 4) + jd
+    days += (jm - 1) * 31 if jm < 7 else ((jm - 7) * 30) + 186
+    gy = 400 * (days // 146097)
+    days %= 146097
+    if days > 36524:
+        days -= 1
+        gy += 100 * (days // 36524)
+        days %= 36524
+        if days >= 365:
+            days += 1
+    gy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        gy += (days - 1) // 365
+        days = (days - 1) % 365
+    gd = days + 1
+    sal_a = [0, 31, 29 if ((gy % 4 == 0 and gy % 100 != 0) or gy % 400 == 0) else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    gm = 0
+    while gm < 13 and gd > sal_a[gm]:
+        gd -= sal_a[gm]
+        gm += 1
+    return gy, gm, gd
+
+def gregorian_to_jalali(gy: int, gm: int, gd: int):
+    g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    gy2 = gy + 1 if gm > 2 else gy
+    days = 355666 + (365 * gy) + ((gy2 + 3) // 4) - ((gy2 + 99) // 100) + ((gy2 + 399) // 400) + gd + g_d_m[gm - 1]
+    jy = -1595 + (33 * (days // 12053))
+    days %= 12053
+    jy += 4 * (days // 1461)
+    days %= 1461
+    if days > 365:
+        jy += (days - 1) // 365
+        days = (days - 1) % 365
+    if days < 186:
+        jm, jd = 1 + days // 31, 1 + days % 31
+    else:
+        jm, jd = 7 + (days - 186) // 30, 1 + (days - 186) % 30
+    return jy, jm, jd
+
+def jalali_month_len(jy: int, jm: int) -> int:
+    if jm <= 6:
+        return 31
+    if jm <= 11:
+        return 30
+    return 30 if gregorian_to_jalali(*jalali_to_gregorian(jy, 12, 30)) == (jy, 12, 30) else 29
+
+def today_jalali():
+    now = datetime.now(timezone(timedelta(hours=3, minutes=30)))   # وقت ایران
+    return gregorian_to_jalali(now.year, now.month, now.day), date(now.year, now.month, now.day)
+
+def clean_time(sy: int, sm: int, sd: int):
+    """مدت پاکی از تاریخ شمسی شروع تا امروز: (سال، ماه، روز، مجموع روز) یا None اگر تاریخ آینده باشد."""
+    (ty, tm, td), today_g = today_jalali()
+    start_g = date(*jalali_to_gregorian(sy, sm, sd))
+    total = (today_g - start_g).days
+    if total < 0:
+        return None
+    y, m, d = ty - sy, tm - sm, td - sd
+    if d < 0:
+        pm, py = (tm - 1, ty) if tm > 1 else (12, ty - 1)
+        d += jalali_month_len(py, pm)
+        m -= 1
+    if m < 0:
+        m += 12
+        y -= 1
+    return y, m, d, total
+
+def clean_result_text(sy: int, sm: int, sd: int) -> str:
+    res = clean_time(sy, sm, sd)
+    if res is None:
+        return "⚠️ تاریخ انتخاب‌شده در آینده است. لطفاً دوباره انتخاب کنید."
+    y, m, d, total = res
+    (ty, tm, td), _ = today_jalali()
+    parts = [f"{fa_num(v)} {u}" for v, u in ((y, "سال"), (m, "ماه"), (d, "روز")) if v]
+    duration = " و ".join(parts) if parts else "امروز اولین روز شماست"
+    return (
+        "📊 روزشمار پاکی\n\n"
+        f"📅 تاریخ شروع پاکی: {fa_num(sd)} {JMONTHS[sm - 1]} {fa_num(sy)}\n"
+        f"🗓 امروز: {fa_num(td)} {JMONTHS[tm - 1]} {fa_num(ty)}\n\n"
+        f"🌿 مدت پاکی شما:\n{duration}\n"
+        f"🔢 مجموع: {fa_num(total)} روز\n\n"
+        "هر روز پاکی یک پیروزی است. 🌱🙏"
+    )
+
+def _clean_years_markup(page: int):
+    (ty, _, _), _ = today_jalali()
+    min_year = ty - CLEAN_MAX_YEARS_BACK
+    years = [ty - page * 12 - i for i in range(12) if ty - page * 12 - i >= min_year]
+    kb = InlineKeyboardBuilder()
+    for y in years:
+        kb.button(text=fa_num(y), callback_data=f"cc_y_{y}")
+    sizes = [4] * (len(years) // 4) + ([len(years) % 4] if len(years) % 4 else [])
+    nav = 0
+    if page > 0:
+        kb.button(text="جدیدتر ➡️", callback_data=f"cc_yp_{page - 1}")
+        nav += 1
+    if ty - (page + 1) * 12 >= min_year:
+        kb.button(text="⬅️ قدیمی‌تر", callback_data=f"cc_yp_{page + 1}")
+        nav += 1
+    if nav:
+        sizes.append(nav)
+    kb.button(text="🔙 بازگشت به منوی اصلی", callback_data="back_to_main")
+    sizes.append(1)
+    kb.adjust(*sizes)
+    return kb.as_markup()
+
+def _clean_months_markup(year: int):
+    (ty, tm, _), _ = today_jalali()
+    last = tm if year == ty else 12
+    kb = InlineKeyboardBuilder()
+    for m in range(1, last + 1):
+        kb.button(text=JMONTHS[m - 1], callback_data=f"cc_m_{year}_{m}")
+    sizes = [3] * (last // 3) + ([last % 3] if last % 3 else [])
+    kb.button(text="🔙 انتخاب سال", callback_data="cc_yp_0")
+    sizes.append(1)
+    kb.adjust(*sizes)
+    return kb.as_markup()
+
+def _clean_days_markup(year: int, month: int):
+    (ty, tm, td), _ = today_jalali()
+    last = jalali_month_len(year, month)
+    if (year, month) == (ty, tm):
+        last = min(last, td)
+    kb = InlineKeyboardBuilder()
+    for d in range(1, last + 1):
+        kb.button(text=fa_num(d), callback_data=f"cc_d_{year}_{month}_{d}")
+    sizes = [7] * (last // 7) + ([last % 7] if last % 7 else [])
+    kb.button(text="🔙 انتخاب ماه", callback_data=f"cc_y_{year}")
+    sizes.append(1)
+    kb.adjust(*sizes)
+    return kb.as_markup()
+
+async def _clean_show(callback: CallbackQuery, text: str, markup):
+    try:
+        await callback.message.edit_text(text, reply_markup=markup)
+    except Exception:
+        await callback.message.answer(text, reply_markup=markup)
+
+@dp.callback_query(F.data == "menu_clean")
+async def clean_menu_handler(callback: CallbackQuery):
+    await callback.answer()
+    await _clean_show(callback, "📊 روزشمار پاکی\n\nسال شروع پاکی خود را انتخاب کنید:", _clean_years_markup(0))
+
+@dp.callback_query(F.data.startswith("cc_"))
+async def clean_callback_handler(callback: CallbackQuery):
+    await callback.answer()
+    try:
+        p = callback.data.split("_")
+        kind = p[1]
+        if kind == "yp":
+            await _clean_show(callback, "📊 روزشمار پاکی\n\nسال شروع پاکی خود را انتخاب کنید:", _clean_years_markup(int(p[2])))
+        elif kind == "y":
+            y = int(p[2])
+            await _clean_show(callback, f"📅 سال {fa_num(y)}\n\nماه شروع پاکی را انتخاب کنید:", _clean_months_markup(y))
+        elif kind == "m":
+            y, m = int(p[2]), int(p[3])
+            await _clean_show(callback, f"📅 {JMONTHS[m - 1]} {fa_num(y)}\n\nروز شروع پاکی را انتخاب کنید:", _clean_days_markup(y, m))
+        elif kind == "d":
+            y, m, d = int(p[2]), int(p[3]), int(p[4])
+            kb = InlineKeyboardBuilder()
+            kb.button(text="🔄 محاسبه مجدد", callback_data="cc_yp_0")
+            kb.button(text="🔙 بازگشت به منوی اصلی", callback_data="back_to_main")
+            kb.adjust(1)
+            await _clean_show(callback, clean_result_text(y, m, d), kb.as_markup())
+    except Exception:
+        traceback.print_exc()
+        await callback.message.answer("❌ خطایی رخ داد. لطفاً دوباره از منو «📊 روزشمار پاکی» را بزنید.", reply_markup=main_markup())
 
 # =========================================================
 # اجرا
