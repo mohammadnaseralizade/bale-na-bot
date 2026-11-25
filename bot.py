@@ -1219,6 +1219,48 @@ async def handle_text_inputs(message: Message):
         reply_markup=main_markup()
     )
 
+# ----- عیب‌یابی صفحه جلسات حضوری (ویژه ادمین) -----
+INPERSON_URL = os.getenv("INPERSON_URL", "https://nairan.org/fa/meetings")
+
+@dp.message(Command("debugmeetings"))
+async def debug_meetings_handler(message: Message):
+    if not message.from_user or str(message.from_user.id) != str(ADMIN_ID):
+        return
+    import httpx
+    from urllib.parse import urljoin
+    try:
+        rep = []
+        async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}) as client:
+            resp = await client.get(INPERSON_URL)
+            html = resp.text
+            low = html.lower()
+            rep.append(f"status={resp.status_code} final_url={resp.url} html_len={len(html)}")
+            keys = ("bmlt", "client_interface", "getsearchresults", "wp-json", "admin-ajax", "fetch(", "axios",
+                    "leaflet", "google.maps", "mapbox", "__next_data__", "nuxt", "react", "vue", "angular", "graphql")
+            rep.append("hints: " + " ".join(f"{k}={low.count(k)}" for k in keys if low.count(k)))
+            rep.append(f"<table>={low.count('<table')} <form>={low.count('<form')} <select>={low.count('<select')} <a>={low.count('<a ')}")
+            rep.append("fields: " + str(re.findall(r'<(?:input|select)[^>]+name=["\']([^"\']+)', html, re.I)[:20]))
+            scripts = [urljoin(INPERSON_URL, s) for s in re.findall(r'<script[^>]+src=["\']([^"\']+)', html, re.I)]
+            rep.append("scripts: " + str(scripts[:10]))
+            pat = r'https?://[^\s"\'<>\\)]*(?:api|json|meeting|bmlt|graphql|search|geo)[^\s"\'<>\\)]*'
+            urls = set(re.findall(pat, html, re.I))
+            # داخل چند اسکریپت اول هم دنبال آدرس API می‌گردیم
+            for sc in scripts[:6]:
+                try:
+                    r = await client.get(sc)
+                    body = r.text[:1_500_000]
+                    urls |= set(re.findall(pat, body, re.I))
+                    for m in list(re.finditer(r"fetch\(|axios\.|\.ajax\(", body))[:3]:
+                        rep.append("… " + body[max(0, m.start() - 60): m.start() + 140].replace("\n", " ") + " …")
+                except Exception as e:
+                    rep.append(f"script error {sc}: {type(e).__name__}")
+            rep.append("api_urls:\n" + "\n".join(sorted(urls)[:25]))
+        rep.append("متن صفحه:\n" + extract_online(html)[:600])
+        for chunk in split_text("\n\n".join(rep), 3500):
+            await message.answer(chunk)
+    except Exception as e:
+        await message.answer(f"❌ خطا: {type(e).__name__}: {e}"[:3500])
+
 # =========================================================
 # اجرا
 # =========================================================
