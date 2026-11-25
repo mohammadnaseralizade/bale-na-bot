@@ -1402,36 +1402,73 @@ def _format_meeting_item(item: dict) -> str:
                  if k not in _SKIP_KEYS and not k.endswith("_id") and isinstance(v, (str, int, float)) and str(v).strip()]
     return " | ".join(parts)
 
+INPERSON_SHOW_TOPICS = os.getenv("INPERSON_SHOW_TOPICS", "0") == "1"   # نمایش موضوع هر جلسه (مثلاً «مشارکت»)
+
+def _clean_html(s: str) -> str:
+    import html as _html
+    s = re.sub(r"(?i)<br\s*/?>|</p>|</li>", "\n", s or "")
+    s = _html.unescape(re.sub(r"<[^>]+>", " ", s))
+    parts = [re.sub(r"\s+", " ", p).strip() for p in s.splitlines()]
+    return " | ".join(p for p in parts if p)
+
+def _sessions_lines(label: str, sessions) -> list:
+    """جلسه‌های هم‌ساعت را در یک خط جمع می‌کند: «شنبه، یک‌شنبه ⏰ 07:00 - 08:00»."""
+    if not sessions:
+        return []
+    groups = {}
+    for s in sessions:
+        if not isinstance(s, dict):
+            continue
+        time_ = re.sub(r"\s+", " ", str(s.get("time") or "")).strip()
+        day = re.sub(r"\s+", " ", str(s.get("day") or "")).strip()
+        topic = re.sub(r"\s+", " ", str(s.get("topic") or "")).strip()
+        if INPERSON_SHOW_TOPICS and topic:
+            day = f"{day} ({topic})"
+        if day or time_:
+            groups.setdefault(time_, []).append(day)
+    if not groups:
+        return []
+    out = [label]
+    for time_, days in groups.items():
+        out.append("   " + "، ".join(d for d in days if d) + (f" ⏰ {time_}" if time_ else ""))
+    return out
+
 def format_location(rec: dict, dist_km=None) -> str:
-    title = _scalar("name", rec.get("name") or rec.get("group_name") or "جلسه")
+    title = re.sub(r"\s+", " ", str(rec.get("name") or rec.get("group_name") or "جلسه")).strip()
     head = f"🔹 {title}"
     if dist_km is not None:
         head += f"  ({dist_km:.1f} کیلومتر)"
     lines = [head]
-    for key, val in rec.items():
-        if key in _SKIP_KEYS or key.endswith("_id") or val in (None, "", [], {}):
-            continue
-        if isinstance(val, list) and val and all(isinstance(x, dict) for x in val):
-            for it in val[:8]:
-                t = _format_meeting_item(it)
-                if t:
-                    lines.append(f"🗓 {t}")
-        elif isinstance(val, list):
-            lines.append(f"{_KNOWN_FIELDS.get(key, '▫️')} " + "، ".join(_scalar(key, x) for x in val if x not in (None, "")))
-        elif isinstance(val, dict):
-            t = _format_meeting_item(val)
-            if t:
-                lines.append(f"▫️ {t}")
-        else:
-            s = _scalar(key, val)
-            if not s or len(s) > 250 or s.lower().startswith("http") or re.match(r"^\d{4}-\d{2}-\d{2}", s):
-                continue
-            lines.append(f"{_KNOWN_FIELDS.get(key, '▫️')} {s}")
+
+    def txt(k):
+        return re.sub(r"\s+", " ", str(rec.get(k) or "")).strip()
+
+    # آدرس: استان، شهر (بدون تکرار)، بخش، آدرس
+    parts = []
+    for k in ("province", "city", "district", "address"):
+        v = txt(k)
+        if v and v not in parts:
+            parts.append(v)
+    if parts:
+        lines.append("📍 " + "، ".join(parts))
+    if txt("phone"):
+        lines.append(f"📞 {txt('phone')}")
+    if txt("gender"):
+        lines.append(f"👥 {txt('gender')}")
+    if txt("feature"):
+        lines.append(f"✨ {txt('feature')}")
+
+    lines += _sessions_lines("🟢 جلسات باز:", rec.get("openSessions"))
+    lines += _sessions_lines("🔒 جلسات بسته:", rec.get("closedSessions"))
+
+    notes = _clean_html(str(rec.get("notes") or ""))
+    if notes:
+        lines.append("📝 " + notes[:200])
     try:
         lines.append(f"🗺 https://maps.google.com/?q={float(rec['lat']):.6f},{float(rec['lng']):.6f}")
     except Exception:
         pass
-    return "\n".join(lines[:14])
+    return "\n".join(lines)
 
 _nearby_cache = {}
 _all_loc_cache = {"t": 0.0, "recs": []}
