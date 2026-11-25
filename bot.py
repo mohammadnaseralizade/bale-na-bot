@@ -168,12 +168,16 @@ SYSTEM_PROMPT = (
 # =========================================================
 def main_inline_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    # دکمه‌های لینک‌دار: مستقیم لینک را باز می‌کنند
+    # دکمه‌های عملیاتی
     kb.button(text="💻 اطلاع از جلسات آنلاین", callback_data="menu_online")
     kb.button(text="🔍 جستجوی جلسات حضوری", callback_data="menu_inperson")
     kb.button(text="📊 روزشمار پاکی", callback_data="menu_clean")
     kb.button(text="🌿 پیام امید امروز", callback_data="menu_jft")
-    # دکمه‌های عملیاتی
+    # سه دکمه لینک‌دار شوراهای فرامنطقه: مستقیم لینک را باز می‌کنند
+    kb.button(text="🌐 شورای فرامنطقه ایران", url="https://nairan.org/fa")
+    kb.button(text="🌐 شورای فرامنطقه APF", url="https://fa.apfna.org/farsi-home")
+    kb.button(text="🌐 شورای فرامنطقه EDM", url="https://edmna.org/")
+    # بقیه دکمه‌ها
     kb.button(text="✉️ ارتباط با کنفرانس خدمات جهانی NA", callback_data="menu_email")
     kb.button(text="🤫 ارسال پیام به سازنده", callback_data="menu_admin_msg")
     kb.button(text="🤖 گفتگوی هوشمند", callback_data="menu_ai")
