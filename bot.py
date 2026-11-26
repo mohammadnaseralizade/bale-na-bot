@@ -29,6 +29,15 @@ AI_CHAT_MODEL = os.getenv("AI_CHAT_MODEL", "gpt-4o-mini")
 AI_STT_MODEL = os.getenv("AI_STT_MODEL", "whisper-1")   # تبدیل ویس به متن
 AI_TTS_MODEL = os.getenv("AI_TTS_MODEL", "tts-1")       # تبدیل متن به ویس
 AI_TTS_VOICE = os.getenv("AI_TTS_VOICE", "nova")
+# --- سرویس دوم هوش مصنوعی (پشتیبان): اگر سرویس اول قطع بود خودکار استفاده می‌شود ---
+AI2_API_KEY = os.getenv("AI2_API_KEY")
+AI2_BASE_URL = os.getenv("AI2_BASE_URL", "")
+AI2_CHAT_MODEL = os.getenv("AI2_CHAT_MODEL", AI_CHAT_MODEL)
+AI2_STT_MODEL = os.getenv("AI2_STT_MODEL", AI_STT_MODEL)
+AI2_TTS_MODEL = os.getenv("AI2_TTS_MODEL", AI_TTS_MODEL)
+AI2_TTS_VOICE = os.getenv("AI2_TTS_VOICE", AI_TTS_VOICE)
+AI_TIMEOUT = float(os.getenv("AI_TIMEOUT", "25"))                  # حداکثر انتظار برای هر سرویس (ثانیه)
+AI_FAIL_COOLDOWN = int(os.getenv("AI_FAIL_COOLDOWN", "120"))       # سرویس خراب تا این مدت (ثانیه) در اولویت آخر می‌رود
 JFT_URL = os.getenv("JFT_URL", "https://jft.nairan1.org/")
 JFT_SELECTOR = os.getenv("JFT_SELECTOR", "")   # اختیاری: سلکتور CSS بخش متن در سایت
 JFT_CACHE_SECONDS = int(os.getenv("JFT_CACHE_SECONDS", "1800"))
@@ -49,17 +58,57 @@ bot = Bot(token=TOKEN)
 # =========================================================
 # راه‌اندازی کلاینت هوش مصنوعی (ایمن)
 # =========================================================
-ai_client = None
-if AI_API_KEY:
+AI_PROVIDERS = []   # فهرست سرویس‌ها به ترتیب اولویت
+try:
+    from openai import AsyncOpenAI
+except Exception:
+    AsyncOpenAI = None
+    log("⚠️ پکیج openai نصب نیست:")
+    traceback.print_exc()
+
+def _add_provider(name, key, base, chat, stt, tts, voice):
+    if not key or not base or AsyncOpenAI is None:
+        return
     try:
-        from openai import AsyncOpenAI
-        ai_client = AsyncOpenAI(api_key=AI_API_KEY, base_url=AI_BASE_URL)
-        log("✅ کلاینت هوش مصنوعی آماده شد.")
+        client = AsyncOpenAI(api_key=key, base_url=base, timeout=AI_TIMEOUT, max_retries=0)
+        AI_PROVIDERS.append({"name": name, "client": client, "chat": chat, "stt": stt, "tts": tts, "voice": voice})
+        log(f"✅ سرویس هوش مصنوعی «{name}» آماده شد ({base}).")
     except Exception:
-        log("⚠️ راه‌اندازی هوش مصنوعی ناموفق بود (پکیج openai نصب است؟):")
+        log(f"⚠️ راه‌اندازی سرویس «{name}» ناموفق بود:")
         traceback.print_exc()
-else:
-    log("⚠️ AI_API_KEY تنظیم نشده؛ گفتگوی هوشمند غیرفعال است.")
+
+_add_provider("اصلی", AI_API_KEY, AI_BASE_URL, AI_CHAT_MODEL, AI_STT_MODEL, AI_TTS_MODEL, AI_TTS_VOICE)
+_add_provider("پشتیبان", AI2_API_KEY, AI2_BASE_URL, AI2_CHAT_MODEL, AI2_STT_MODEL, AI2_TTS_MODEL, AI2_TTS_VOICE)
+
+# برای سازگاری با بقیه کد: اگر حداقل یک سرویس فعال باشد، ai_client خالی نیست
+ai_client = AI_PROVIDERS[0]["client"] if AI_PROVIDERS else None
+if not AI_PROVIDERS:
+    log("⚠️ هیچ سرویس هوش مصنوعی تنظیم نشده (AI_API_KEY / AI2_API_KEY)؛ گفتگوی هوشمند غیرفعال است.")
+
+_ai_fail_until = {}
+
+async def ai_call(call):
+    """call(provider) را روی سرویس‌ها به ترتیب اجرا می‌کند؛ اگر یکی خطا داد، سراغ بعدی می‌رود."""
+    now = time.time()
+    ready = [p for p in AI_PROVIDERS if _ai_fail_until.get(p["name"], 0) <= now]
+    waiting = [p for p in AI_PROVIDERS if p not in ready]
+    last_err = None
+    for p in ready + waiting:
+        try:
+            result = await call(p)
+            _ai_fail_until.pop(p["name"], None)
+            return result
+        except Exception as e:
+            last_err = e
+            log(f"AI provider «{p['name']}» failed: {e!r}")
+            newly_failed = _ai_fail_until.get(p["name"], 0) <= time.time()
+            _ai_fail_until[p["name"]] = time.time() + AI_FAIL_COOLDOWN
+            if newly_failed and len(AI_PROVIDERS) > 1:
+                try:
+                    await report_admin(f"⚠️ سرویس هوش مصنوعی «{p['name']}» خطا داد و موقتاً کنار گذاشته شد:\n{type(e).__name__}: {e}")
+                except Exception:
+                    pass
+    raise last_err if last_err else RuntimeError("no AI provider configured")
 
 # =========================================================
 # بخش دیتابیس
@@ -1102,31 +1151,35 @@ async def ask_ai(user_id: int, text: str) -> str:
     history.append({"role": "user", "content": text})
     if len(history) > 11:
         history[:] = [history[0]] + history[-10:]
-    response = await ai_client.chat.completions.create(
-        model=AI_CHAT_MODEL,
-        messages=history,
-        max_tokens=500,
-        temperature=0.7
-    )
+    try:
+        response = await ai_call(lambda p: p["client"].chat.completions.create(
+            model=p["chat"],
+            messages=history,
+            max_tokens=500,
+            temperature=0.7
+        ))
+    except Exception:
+        history.pop()   # پیام بی‌پاسخ در تاریخچه نماند
+        raise
     reply = response.choices[0].message.content
     history.append({"role": "assistant", "content": reply})
     return reply
 
 async def voice_to_text(file_bytes: bytes) -> str:
-    result = await ai_client.audio.transcriptions.create(
-        model=AI_STT_MODEL,
+    result = await ai_call(lambda p: p["client"].audio.transcriptions.create(
+        model=p["stt"],
         file=("voice.ogg", file_bytes, "audio/ogg"),
         language="fa",
-    )
+    ))
     return (result.text or "").strip()
 
 async def text_to_voice(text: str) -> bytes:
-    response = await ai_client.audio.speech.create(
-        model=AI_TTS_MODEL,
-        voice=AI_TTS_VOICE,
+    response = await ai_call(lambda p: p["client"].audio.speech.create(
+        model=p["tts"],
+        voice=p["voice"],
         input=text[:1500],
         response_format="opus",   # ogg/opus، مناسب برای ویس
-    )
+    ))
     return response.content
 
 async def send_voice_reply(message: Message, audio_bytes: bytes):
@@ -1867,32 +1920,37 @@ async def clean_callback_handler(callback: CallbackQuery):
 
 @dp.message(Command("testai"))
 async def test_ai_handler(message: Message):
-    """ویژه ادمین: آزمایش گفتگو، تبدیل متن به ویس و ویس به متن."""
+    """ویژه ادمین: آزمایش جداگانه هر سرویس (گفتگو، متن به ویس، ویس به متن)."""
     if not message.from_user or str(message.from_user.id) != str(ADMIN_ID):
         return
-    if ai_client is None:
-        await message.answer("❌ کلاینت هوش مصنوعی ساخته نشده (AI_API_KEY یا پکیج openai را بررسی کنید).")
+    if not AI_PROVIDERS:
+        await message.answer("❌ هیچ سرویس هوش مصنوعی ساخته نشده (AI_API_KEY / AI2_API_KEY و AI2_BASE_URL و پکیج openai را بررسی کنید).")
         return
-    rep = [f"base_url={AI_BASE_URL}\nchat={AI_CHAT_MODEL} stt={AI_STT_MODEL} tts={AI_TTS_MODEL} voice={AI_TTS_VOICE}"]
-    try:
-        r = await ai_client.chat.completions.create(
-            model=AI_CHAT_MODEL, messages=[{"role": "user", "content": "سلام"}], max_tokens=20)
-        rep.append("✅ chat: " + (r.choices[0].message.content or "")[:60])
-    except Exception as e:
-        rep.append(f"❌ chat: {type(e).__name__}: {e}")
-    audio = None
-    try:
-        audio = await text_to_voice("سلام، حال شما چطور است؟")
-        rep.append(f"✅ tts: {len(audio)} bytes")
-    except Exception as e:
-        rep.append(f"❌ tts: {type(e).__name__}: {e}")
-    if audio:
+    for p in AI_PROVIDERS:
+        c = p["client"]
+        rep = [f"🔧 سرویس «{p['name']}»\nbase_url={c.base_url}\nchat={p['chat']} stt={p['stt']} tts={p['tts']} voice={p['voice']}"]
         try:
-            txt = await voice_to_text(audio)
-            rep.append(f"✅ stt: {txt[:80]}")
+            r = await c.chat.completions.create(
+                model=p["chat"], messages=[{"role": "user", "content": "سلام"}], max_tokens=20)
+            rep.append("✅ chat: " + (r.choices[0].message.content or "")[:60])
         except Exception as e:
-            rep.append(f"❌ stt: {type(e).__name__}: {e}")
-    await message.answer("\n\n".join(rep)[:3500])
+            rep.append(f"❌ chat: {type(e).__name__}: {e}")
+        audio = None
+        try:
+            resp = await c.audio.speech.create(model=p["tts"], voice=p["voice"],
+                                               input="سلام، حال شما چطور است؟", response_format="opus")
+            audio = resp.content
+            rep.append(f"✅ tts: {len(audio)} bytes")
+        except Exception as e:
+            rep.append(f"❌ tts: {type(e).__name__}: {e}")
+        if audio:
+            try:
+                res = await c.audio.transcriptions.create(
+                    model=p["stt"], file=("voice.ogg", audio, "audio/ogg"), language="fa")
+                rep.append(f"✅ stt: {(res.text or '')[:80]}")
+            except Exception as e:
+                rep.append(f"❌ stt: {type(e).__name__}: {e}")
+        await message.answer("\n\n".join(rep)[:3500])
 
 # =========================================================
 # اجرا
