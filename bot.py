@@ -179,6 +179,7 @@ def main_inline_keyboard() -> InlineKeyboardBuilder:
     kb.button(text="🌐 شورای فرامنطقه EDM", url="https://edmna.org/")
     # بقیه دکمه‌ها
     kb.button(text="✉️ ارتباط با کنفرانس خدمات جهانی NA", callback_data="menu_email")
+    kb.button(text="📧 دفتر خدمات جهانی NA ایران", url="mailto:info@wsoiran.org")
     kb.button(text="🤫 ارسال پیام به سازنده", callback_data="menu_admin_msg")
     kb.button(text="🤖 گفتگوی هوشمند", callback_data="menu_ai")
     kb.adjust(1)
@@ -186,7 +187,6 @@ def main_inline_keyboard() -> InlineKeyboardBuilder:
 
 def email_inline_keyboard() -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
-    kb.button(text="دفتر خدمات جهانی NA ایران", url="mailto:info@wsoiran.org")
     kb.button(text="اطلاعات عمومی و فلووشیپ", url="mailto:fsmail@na.org")
     kb.button(text="خدمات مشتری (سفارشات)", url="mailto:customer_service@na.org")
     kb.button(text="هیئت جهانی", url="mailto:worldboard@na.org")
@@ -199,7 +199,7 @@ def email_inline_keyboard() -> InlineKeyboardBuilder:
     kb.button(text="کمک‌های مالی", url="mailto:contributions@na.org")
     kb.button(text="فرصت‌های شغلی", url="mailto:jobs@na.org")
     kb.button(text="🔙 بازگشت به منوی اصلی", callback_data="back_to_main")
-    kb.adjust(1, 2, 2, 2, 2, 1, 1, 1)
+    kb.adjust(2, 2, 2, 2, 2, 1, 1)
     return kb
 
 def main_markup():
