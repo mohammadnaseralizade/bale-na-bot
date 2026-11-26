@@ -8,6 +8,7 @@ import re
 import time
 import tempfile
 import calendar
+from urllib.parse import urljoin, urlparse, quote, unquote, parse_qs
 
 from baleio import Bot, Dispatcher, F
 from baleio.filters import CommandStart, Command
@@ -48,6 +49,14 @@ ONLINE_CACHE_SECONDS = int(os.getenv("ONLINE_CACHE_SECONDS", "600"))
 ONLINE_MAX_CHARS = int(os.getenv("ONLINE_MAX_CHARS", "8000"))
 MAX_VOICE_SECONDS = int(os.getenv("MAX_VOICE_SECONDS", "60"))
 MAX_VOICE_BYTES = int(os.getenv("MAX_VOICE_BYTES", str(2 * 1024 * 1024)))
+
+# --- جلسات حضوری خارج از ایران ---
+NA_WORLD_SEARCH_URL = os.getenv("NA_WORLD_SEARCH_URL", "https://na.org/meetingsearch/find-na/")
+GOOGLE_CSE_KEY = os.getenv("GOOGLE_CSE_KEY", "")     # اختیاری: کلید Google Programmable Search
+GOOGLE_CSE_CX = os.getenv("GOOGLE_CSE_CX", "")       # اختیاری: شناسه موتور جستجو (cx)
+LOCAL_SITE_MAX_PAGES = int(os.getenv("LOCAL_SITE_MAX_PAGES", "3"))   # حداکثر تعداد سایت محلی که بررسی می‌شود
+_BLOCK_DOMAINS = ("facebook.com", "instagram.com", "youtube.com", "wikipedia.org", "reddit.com",
+                  "twitter.com", "x.com", "tiktok.com", "pinterest.com", "na.org")
 
 if not TOKEN:
     log("❌ خطا: متغیر محیطی BOT_TOKEN تنظیم نشده است.")
@@ -223,7 +232,7 @@ def set_lang(user_id, lang: str):
         log(f"set_lang error: {e!r}")
 
 # =========================================================
-# متن‌ها (Persian/ English)
+# متن‌ها (فارسی / English)
 # =========================================================
 STR = {
     "fa": {
@@ -306,10 +315,18 @@ STR = {
         "text_results_header": "🏢 جلسات حضوری «{q}»",
         "global_header": "🌍 نزدیک‌ترین جلسات حضوری NA{where}",
         "global_none": (
-            "ℹ️ برای این محدوده در پایگاه داده جهانی جلسات NA (BMLT) جلسه‌ای پیدا نشد.\n"
-            "می‌توانید در سایت جستجوی جلسات NA جهانی بگردید:\n{url}"
+            "ℹ️ برای این محدوده جلسه حضوری ثبت‌شده‌ای پیدا نشد.\n"
+            "می‌توانید نزدیک‌ترین انجمن محلی NA را از سایت رسمی پیدا کنید:\n{url}"
         ),
-        "global_footer": "ℹ️ اطلاعات از پایگاه داده جهانی جلسات NA (BMLT) گرفته شده است. قبل از رفتن، با گروه هماهنگ کنید.",
+        "global_footer": (
+            "ℹ️ اطلاعات از پایگاه داده جهانی جلسات NA (BMLT) گرفته شده است. قبل از رفتن، با گروه هماهنگ کنید.\n"
+            "🌍 لیست کامل‌تر: " + NA_WORLD_SEARCH_URL
+        ),
+        "local_header": "🌍 جلسات حضوری NA از سایت محلی{where}",
+        "local_footer": (
+            "ℹ️ این اطلاعات از سایت محلی NA گرفته شده و ممکن است قدیمی باشد. قبل از رفتن با گروه هماهنگ کنید.\n"
+            "🔗 منبع: {src}"
+        ),
         "km": "کیلومتر",
         "meeting": "جلسه",
         "open_sessions": "🟢 جلسات باز:",
@@ -417,10 +434,18 @@ STR = {
         "text_results_header": "🏢 In-person meetings for “{q}”",
         "global_header": "🌍 Nearest in-person NA meetings{where}",
         "global_none": (
-            "ℹ️ No meetings were found for this area in the worldwide NA meeting database (BMLT).\n"
-            "You can also try the worldwide NA meeting search:\n{url}"
+            "ℹ️ No registered in-person meetings were found for this area.\n"
+            "You can find your nearest local NA community on the official site:\n{url}"
         ),
-        "global_footer": "ℹ️ Data comes from the worldwide NA meeting database (BMLT). Please confirm with the group before going.",
+        "global_footer": (
+            "ℹ️ Data comes from the worldwide NA meeting database (BMLT). Please confirm with the group before going.\n"
+            "🌍 More: " + NA_WORLD_SEARCH_URL
+        ),
+        "local_header": "🌍 In-person NA meetings from the local site{where}",
+        "local_footer": (
+            "ℹ️ Taken from the local NA website and may be out of date. Please confirm with the group before going.\n"
+            "🔗 Source: {src}"
+        ),
         "km": "km",
         "meeting": "Meeting",
         "open_sessions": "🟢 Open meetings:",
@@ -986,8 +1011,6 @@ def split_text(text: str, limit: int = 3500):
     if cur.strip():
         chunks.append(cur.strip())
     return chunks
-
-from urllib.parse import urljoin, urlparse
 
 ONLINE_LINK_SELECTOR = os.getenv("ONLINE_LINK_SELECTOR", "")   # اختیاری: سلکتور CSS لینک‌های جلسات در صفحه لیست
 ONLINE_MAX_PAGES = int(os.getenv("ONLINE_MAX_PAGES", "60"))     # حداکثر تعداد صفحه جلسه که بررسی می‌شود
@@ -1651,7 +1674,6 @@ async def debug_meetings_handler(message: Message):
     if not message.from_user or str(message.from_user.id) != str(ADMIN_ID):
         return
     import httpx
-    from urllib.parse import urljoin
     try:
         rep = []
         async with httpx.AsyncClient(timeout=25, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}) as client:
@@ -1772,7 +1794,8 @@ async def debug_meetings2_handler(message: Message):
 # =========================================================
 # جلسات حضوری
 #   - داخل ایران: از سایت شورای فرامنطقه ایران (لینک مسیریاب نشان)
-#   - سایر کشورها: از پایگاه داده جهانی جلسات NA (BMLT Aggregator) با Google Maps و Waze
+#   - سایر کشورها: ۱) پایگاه داده جهانی جلسات NA (BMLT Aggregator) با لینک Google Maps
+#                  ۲) اگر چیزی پیدا نشد: سایت محلی NA همان منطقه (جستجو + استخراج با هوش مصنوعی)
 # =========================================================
 import json
 import math
@@ -1784,7 +1807,6 @@ GEOCODE_URL = os.getenv("GEOCODE_URL", "https://nominatim.openstreetmap.org/sear
 # --- پایگاه داده جهانی جلسات NA ---
 AGGREGATOR_URL = os.getenv("BMLT_AGGREGATOR_URL", "https://aggregator.bmltenabled.org/main_server/")
 GLOBAL_FETCH_N = int(os.getenv("GLOBAL_FETCH_N", "40"))              # تعداد جلسه‌ای که برای گروه‌بندی از سرور خواسته می‌شود
-NA_WORLD_SEARCH_URL = os.getenv("NA_WORLD_SEARCH_URL", "https://www.na.org/meetingsearch/")
 
 # قالب لینک مسیریاب نشان (برای کاربران داخل ایران)؛ در صورت نیاز از طریق متغیر محیطی تغییر دهید
 NESHAN_URL_TEMPLATE = os.getenv("NESHAN_URL_TEMPLATE", "https://nshn.ir/?lat={lat}&lng={lng}")
@@ -1816,15 +1838,15 @@ def in_iran(lat: float, lon: float) -> bool:
         j = i
     return inside
 
+def gmaps_link(lat, lng) -> str:
+    return f"https://www.google.com/maps/search/?api=1&query={float(lat):.6f},{float(lng):.6f}"
+
 def nav_links(lat, lng, nav: str = "ir", lang: str = DEFAULT_LANG) -> list:
-    """nav='ir' -> لینک نشان | nav='global' -> لینک Google Maps و Waze."""
+    """nav='ir' -> لینک نشان | nav='global' -> لینک Google Maps."""
     lat_s, lng_s = f"{float(lat):.6f}", f"{float(lng):.6f}"
     if nav == "ir":
         return [T(lang, "neshan") + NESHAN_URL_TEMPLATE.format(lat=lat_s, lng=lng_s)]
-    return [
-        f"🗺 Google Maps: https://maps.google.com/?q={lat_s},{lng_s}",
-        f"🚗 Waze: https://waze.com/ul?ll={lat_s},{lng_s}&navigate=yes",
-    ]
+    return [f"🗺 Google Maps: {gmaps_link(lat, lng)}"]
 
 _DAY_NAMES = {0: "شنبه", 1: "یک‌شنبه", 2: "دوشنبه", 3: "سه‌شنبه", 4: "چهارشنبه", 5: "پنج‌شنبه", 6: "جمعه"}
 _SEX_NAMES = {0: "بانوان", 1: "آقایان", 2: "مختلط"}
@@ -1901,7 +1923,7 @@ def _sessions_lines(label: str, sessions, lang: str = DEFAULT_LANG) -> list:
     return out
 
 def format_location(rec: dict, dist_km=None, nav: str = "ir", lang: str = DEFAULT_LANG) -> str:
-    """جلسه ایران. nav='ir' -> لینک نشان | nav='global' -> لینک Google Maps و Waze."""
+    """جلسه ایران. nav='ir' -> لینک نشان | nav='global' -> لینک Google Maps."""
     title = re.sub(r"\s+", " ", str(rec.get("name") or rec.get("group_name") or T(lang, "meeting"))).strip()
     head = f"🔹 {title}"
     if dist_km is not None:
@@ -2111,6 +2133,147 @@ def format_global(g: dict, lang: str = "en") -> str:
         lines.append(T(lang, "source", src=src))
     return "\n".join(lines)
 
+# ----- جلسات سایت محلی NA (وقتی BMLT چیزی نداشت) -----
+async def reverse_geocode(lat: float, lon: float):
+    """مختصات -> (شهر، کشور) به انگلیسی."""
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15, headers={"User-Agent": "NA-Bale-Bot/1.0"}) as c:
+            r = await c.get("https://nominatim.openstreetmap.org/reverse", params={
+                "lat": lat, "lon": lon, "format": "json", "zoom": 10, "accept-language": "en"})
+            a = r.json().get("address", {})
+        city = a.get("city") or a.get("town") or a.get("village") or a.get("county") or a.get("state") or ""
+        return city, a.get("country", "")
+    except Exception as e:
+        log(f"reverse_geocode error: {e!r}")
+        return "", ""
+
+def _ok_url(u: str) -> bool:
+    h = _host(u)
+    return u.startswith("http") and not any(h == d or h.endswith("." + d) for d in _BLOCK_DOMAINS)
+
+async def search_local_sites(query: str):
+    """سایت‌های محلی NA را از موتور جستجو پیدا می‌کند (Google API → Google → DuckDuckGo)."""
+    import httpx
+    from bs4 import BeautifulSoup
+    urls = []
+    hdr = {"User-Agent": "Mozilla/5.0", "Accept-Language": "en"}
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True, headers=hdr) as c:
+        if GOOGLE_CSE_KEY and GOOGLE_CSE_CX:
+            try:
+                r = await c.get("https://www.googleapis.com/customsearch/v1",
+                                params={"key": GOOGLE_CSE_KEY, "cx": GOOGLE_CSE_CX, "q": query, "num": 8})
+                urls += [it["link"] for it in r.json().get("items", [])]
+            except Exception as e:
+                log(f"CSE error: {e!r}")
+        if not urls:
+            try:
+                r = await c.get("https://www.google.com/search", params={"q": query, "num": 10})
+                for a in BeautifulSoup(r.text, "html.parser").find_all("a", href=True):
+                    if a["href"].startswith("/url?q="):
+                        urls.append(unquote(a["href"][7:].split("&")[0]))
+            except Exception as e:
+                log(f"Google search error: {e!r}")
+        if not urls:
+            try:
+                r = await c.post("https://html.duckduckgo.com/html/", data={"q": query})
+                for a in BeautifulSoup(r.text, "html.parser").select("a.result__a"):
+                    h = a.get("href", "")
+                    if "uddg=" in h:
+                        h = unquote(parse_qs(urlparse(h).query).get("uddg", [""])[0])
+                    urls.append(h)
+            except Exception as e:
+                log(f"DDG error: {e!r}")
+    out, seen = [], set()
+    for u in urls:
+        if _ok_url(u) and _host(u) not in seen:
+            seen.add(_host(u))
+            out.append(u)
+    return out[:LOCAL_SITE_MAX_PAGES]
+
+async def fetch_page_text(url: str, limit: int = 6000) -> str:
+    """متن صفحه؛ اگر ساعت جلسه نداشت، یک لینک «meeting» داخل همان سایت را هم می‌خواند."""
+    import httpx
+    from bs4 import BeautifulSoup
+
+    def text_of(soup):
+        for t in soup(["script", "style", "noscript", "nav", "header", "footer", "form", "svg"]):
+            t.decompose()
+        return _clean_text(soup.get_text("\n", strip=True))
+
+    async with httpx.AsyncClient(timeout=20, follow_redirects=True, headers={"User-Agent": "Mozilla/5.0"}) as c:
+        r = await c.get(url)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, "html.parser")
+        link = None
+        for a in soup.find_all("a", href=True):
+            if "meeting" in (a["href"] + a.get_text()).lower():
+                full = urljoin(url, a["href"]).split("#")[0]
+                if _host(full) == _host(url) and full != url:
+                    link = full
+                    break
+        txt = text_of(soup)
+        if link and not re.search(r"\d{1,2}[:.]\d{2}|\b[ap]\.?m\b", txt, re.I):
+            try:
+                r2 = await c.get(link)
+                txt = text_of(BeautifulSoup(r2.text, "html.parser")) or txt
+            except Exception:
+                pass
+    return txt[:limit]
+
+async def extract_meetings_ai(page_text: str, place: str):
+    """جلسات حضوری نوشته‌شده در متن صفحه را به JSON تبدیل می‌کند (بدون حدس)."""
+    resp = await ai_call(lambda p: p["client"].chat.completions.create(
+        model=p["chat"],
+        messages=[
+            {"role": "system", "content": (
+                "Extract IN-PERSON Narcotics Anonymous meetings from the text. Use ONLY information that is explicitly "
+                "in the text; never invent anything. Return ONLY a JSON array (max 8 items) of objects with keys: "
+                "name, day_time, address. Use \"\" if unknown. Skip online-only meetings. If none, return [].")},
+            {"role": "user", "content": f"Area: {place}\n\n{page_text}"},
+        ],
+        max_tokens=900, temperature=0,
+    ))
+    raw = re.sub(r"```(?:json)?", "", resp.choices[0].message.content or "").strip()
+    data = json.loads(raw)
+    if not isinstance(data, list):
+        return []
+    return [m for m in data if isinstance(m, dict) and (m.get("name") or m.get("address"))][:8]
+
+async def send_local_site_fallback(message, lang: str, lat: float, lon: float) -> bool:
+    """سایت محلی NA همان منطقه را پیدا و جلسات را می‌فرستد. True یعنی نتیجه ارسال شد."""
+    if not AI_PROVIDERS:
+        return False
+    city, country = await reverse_geocode(lat, lon)
+    place = ", ".join(x for x in (city, country) if x)
+    if not place:
+        return False
+    sites = await search_local_sites(f"Narcotics Anonymous NA meetings {place}")
+    for site in sites:
+        try:
+            text = await fetch_page_text(site)
+            meetings = await extract_meetings_ai(text, place)
+        except Exception as e:
+            log(f"Local site error {site}: {e!r}")
+            continue
+        if not meetings:
+            continue
+        items = []
+        for m in meetings:
+            name = str(m.get("name") or T(lang, "meeting")).strip()
+            lines = [f"🔹 {name}"]
+            if m.get("day_time"):
+                lines.append(f"🗓 {m['day_time']}")
+            if m.get("address"):
+                addr = str(m["address"]).strip()
+                lines.append(f"📍 {addr}")
+                lines.append("🗺 Google Maps: https://www.google.com/maps/search/?api=1&query=" + quote(f"{addr}, {place}"))
+            items.append("\n".join(lines))
+        await send_results(message, lang, T(lang, "local_header", where=f" ({place})"), items,
+                           footer=T(lang, "local_footer", src=site))
+        return True
+    return False
+
 async def send_results(message, lang: str, header: str, items, footer: str = ""):
     text = header + "\n\n" + "\n\n".join(items)
     if footer:
@@ -2129,11 +2292,17 @@ async def send_global_nearby(message, lang: str, lat: float, lon: float, label: 
     if groups:
         await send_results(message, lang, T(lang, "global_header", where=where),
                            [format_global(g, lang) for g in groups], footer=T(lang, "global_footer"))
-    else:
-        await message.answer(T(lang, "global_none", url=NA_WORLD_SEARCH_URL), reply_markup=jft_markup(lang))
+        return
+    # BMLT جلسه‌ای نداشت: سایت محلی NA همان منطقه را بررسی می‌کنیم
+    try:
+        if await send_local_site_fallback(message, lang, lat, lon):
+            return
+    except Exception as e:
+        log(f"Local fallback error: {e!r}")
+    await message.answer(T(lang, "global_none", url=NA_WORLD_SEARCH_URL), reply_markup=jft_markup(lang))
 
 async def send_nearby(message, lang: str, lat: float, lon: float, label: str = ""):
-    # خارج از ایران: پایگاه داده جهانی NA + لینک Google Maps و Waze
+    # خارج از ایران: پایگاه داده جهانی NA + سایت محلی + لینک Google Maps
     if not in_iran(lat, lon):
         await send_global_nearby(message, lang, lat, lon, label)
         return
@@ -2261,6 +2430,26 @@ async def debug_location_handler(message: Message):
             await message.answer(chunk)
     except Exception as e:
         await message.answer(f"❌ خطا: {type(e).__name__}: {e}"[:3500])
+
+@dp.message(Command("testlocal"))
+async def test_local_handler(message: Message):
+    """ویژه ادمین: آزمایش جستجوی سایت محلی NA (نمونه: استانبول). برای مکان دیگر: /testlocal lat lon"""
+    if not message.from_user or str(message.from_user.id) != str(ADMIN_ID):
+        return
+    lat, lon = 41.0082, 28.9784
+    parts = (message.text or "").split()
+    if len(parts) >= 3:
+        try:
+            lat, lon = float(parts[1]), float(parts[2])
+        except ValueError:
+            pass
+    try:
+        lang = get_lang(message.from_user.id)
+        ok = await send_local_site_fallback(message, lang, lat, lon)
+        if not ok:
+            await message.answer("❌ جلسه‌ای از سایت محلی استخراج نشد (لاگ سرور را ببینید).")
+    except Exception as e:
+        await message.answer(f"❌ {type(e).__name__}: {e}"[:3500])
 
 # =========================================================
 # روزشمار پاکی (انتخاب سال/ماه/روز با دکمه‌های شیشه‌ای)
