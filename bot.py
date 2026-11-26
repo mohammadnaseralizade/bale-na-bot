@@ -1447,6 +1447,23 @@ INPERSON_RADIUS_KM = float(os.getenv("INPERSON_RADIUS_KM", "20"))   # شعاع �
 INPERSON_MAX = int(os.getenv("INPERSON_MAX", "8"))                  # حداکثر تعداد جلسه در پاسخ
 GEOCODE_URL = os.getenv("GEOCODE_URL", "https://nominatim.openstreetmap.org/search")
 
+# قالب لینک مسیریاب نشان (برای کاربران داخل ایران)؛ در صورت نیاز از طریق متغیر محیطی تغییر دهید
+NESHAN_URL_TEMPLATE = os.getenv("NESHAN_URL_TEMPLATE", "https://nshn.ir/?lat={lat}&lng={lng}")
+
+def in_iran(lat: float, lon: float) -> bool:
+    """تشخیص تقریبی (مستطیل مرزی) اینکه نقطه داخل ایران است."""
+    return 25.0 <= lat <= 39.9 and 44.0 <= lon <= 63.4
+
+def nav_links(lat, lng, nav: str = "ir") -> list:
+    """nav='ir' -> لینک نشان | nav='global' -> لینک Google Maps و Waze."""
+    lat_s, lng_s = f"{float(lat):.6f}", f"{float(lng):.6f}"
+    if nav == "ir":
+        return ["🧭 مسیریابی (نشان): " + NESHAN_URL_TEMPLATE.format(lat=lat_s, lng=lng_s)]
+    return [
+        f"🗺 Google Maps: https://maps.google.com/?q={lat_s},{lng_s}",
+        f"🚗 Waze: https://waze.com/ul?ll={lat_s},{lng_s}&navigate=yes",
+    ]
+
 _DAY_NAMES = {0: "شنبه", 1: "یک‌شنبه", 2: "دوشنبه", 3: "سه‌شنبه", 4: "چهارشنبه", 5: "پنج‌شنبه", 6: "جمعه"}
 _SEX_NAMES = {0: "بانوان", 1: "آقایان", 2: "مختلط"}
 _KNOWN_FIELDS = {
@@ -1520,7 +1537,8 @@ def _sessions_lines(label: str, sessions) -> list:
         out.append("   " + "، ".join(d for d in days if d) + (f" ⏰ {time_}" if time_ else ""))
     return out
 
-def format_location(rec: dict, dist_km=None) -> str:
+def format_location(rec: dict, dist_km=None, nav: str = "ir") -> str:
+    """nav='ir' -> لینک نشان | nav='global' -> لینک Google Maps و Waze."""
     title = re.sub(r"\s+", " ", str(rec.get("name") or rec.get("group_name") or "جلسه")).strip()
     head = f"🔹 {title}"
     if dist_km is not None:
@@ -1552,7 +1570,7 @@ def format_location(rec: dict, dist_km=None) -> str:
     if notes:
         lines.append("📝 " + notes[:200])
     try:
-        lines.append(f"🗺 https://maps.google.com/?q={float(rec['lat']):.6f},{float(rec['lng']):.6f}")
+        lines += nav_links(rec["lat"], rec["lng"], nav)
     except Exception:
         pass
     return "\n".join(lines)
@@ -1629,13 +1647,15 @@ async def send_results(message, header: str, items):
 async def send_nearby(message, lat: float, lon: float, label: str = ""):
     recs = await fetch_nearby(lat, lon)
     near, closest = pick_nearest(recs, lat, lon)
+    # کاربر داخل ایران -> لینک نشان | کاربر خارج از ایران -> Google Maps و Waze
+    nav = "ir" if in_iran(lat, lon) else "global"
     where = f" ({label})" if label else ""
     if near:
         await send_results(message, f"🏢 جلسات حضوری نزدیک شما{where} — تا {INPERSON_RADIUS_KM:g} کیلومتر",
-                           [format_location(r, d) for d, r in near])
+                           [format_location(r, d, nav) for d, r in near])
     elif closest:
         await send_results(message, f"ℹ️ در شعاع {INPERSON_RADIUS_KM:g} کیلومتری{where} جلسه‌ای پیدا نشد. نزدیک‌ترین جلسات:",
-                           [format_location(r, d) for d, r in closest])
+                           [format_location(r, d, nav) for d, r in closest])
     else:
         await message.answer("ℹ️ جلسه‌ای برای این محدوده پیدا نشد.", reply_markup=jft_markup())
 
@@ -1655,12 +1675,12 @@ async def inperson_by_text(message, query: str):
             label = geo[2].split("،")[0][:50] if geo[2] else q
             await send_nearby(message, geo[0], geo[1], label)
         else:
-            # راه دوم: جست‌وجوی متنی در فهرست همه جلسات
+            # راه دوم: جست‌وجوی متنی در فهرست همه جلسات (جلسات ایران -> لینک نشان)
             recs = await fetch_all_locations()
             nq = _squash(q)
             hits = [r for r in recs if nq in _squash(json.dumps(r, ensure_ascii=False))][:INPERSON_MAX]
             if hits:
-                await send_results(message, f"🏢 جلسات حضوری «{q}»", [format_location(r) for r in hits])
+                await send_results(message, f"🏢 جلسات حضوری «{q}»", [format_location(r, nav="ir") for r in hits])
             else:
                 await message.answer("ℹ️ مکانی با این نام پیدا نشد. نام شهر را کامل‌تر بنویسید یا لوکیشن خود را بفرستید.")
     except Exception as e:
@@ -1728,7 +1748,8 @@ async def debug_location_handler(message: Message):
         if recs:
             rep.append("keys: " + str(list(recs[0].keys())))
             rep.append("RAW:\n" + json.dumps(recs[0], ensure_ascii=False)[:1500])
-            rep.append("FORMATTED:\n" + format_location(recs[0]))
+            rep.append("FORMATTED (ir):\n" + format_location(recs[0], nav="ir"))
+            rep.append("FORMATTED (global):\n" + format_location(recs[0], nav="global"))
         for chunk in split_text("\n\n".join(rep), 3500):
             await message.answer(chunk)
     except Exception as e:
