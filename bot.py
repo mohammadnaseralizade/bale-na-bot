@@ -151,6 +151,29 @@ def init_db():
             lang TEXT
         )
     ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS clean_dates (
+            user_id INTEGER PRIMARY KEY,
+            start_date TEXT,
+            notify INTEGER DEFAULT 1,
+            last_sent TEXT
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS usage (
+            day TEXT,
+            feature TEXT,
+            count INTEGER DEFAULT 0,
+            PRIMARY KEY (day, feature)
+        )
+    ''')
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS error_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            error TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
     conn.commit()
     conn.close()
 
@@ -231,6 +254,123 @@ def set_lang(user_id, lang: str):
     except Exception as e:
         log(f"set_lang error: {e!r}")
 
+# ----- توابع کمکی دیتابیس: آمار استفاده، خطاها، تاریخ پاکی -----
+def _iran_day() -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(time.time() + 12600))   # وقت ایران
+
+def get_all_user_ids():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute('SELECT user_id FROM users').fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+    except Exception as e:
+        log(f"get_all_user_ids error: {e!r}")
+        return []
+
+def track(feature: str):
+    # شمارش استفاده از هر بخش (برای آمار ادمین)
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute('INSERT OR IGNORE INTO usage (day, feature, count) VALUES (?, ?, 0)', (_iran_day(), feature))
+        conn.execute('UPDATE usage SET count = count + 1 WHERE day = ? AND feature = ?', (_iran_day(), feature))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log(f"track error: {e!r}")
+
+def get_usage():
+    # خروجی: {بخش: (امروز، کل)}
+    out = {}
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute(
+            'SELECT feature, SUM(count), SUM(CASE WHEN day = ? THEN count ELSE 0 END) FROM usage GROUP BY feature',
+            (_iran_day(),)).fetchall()
+        conn.close()
+        for f, total, today in rows:
+            out[f] = (today or 0, total or 0)
+    except Exception as e:
+        log(f"get_usage error: {e!r}")
+    return out
+
+def save_error(text: str):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute('INSERT INTO error_log (error) VALUES (?)', (str(text)[:1500],))
+        conn.execute('DELETE FROM error_log WHERE id NOT IN (SELECT id FROM error_log ORDER BY id DESC LIMIT 200)')
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log(f"save_error error: {e!r}")
+
+def get_last_errors(limit: int = 10):
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute('SELECT id, created_at, error FROM error_log ORDER BY id DESC LIMIT ?', (limit,)).fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        log(f"get_last_errors error: {e!r}")
+        return []
+
+def get_clean_date(user_id):
+    # خروجی: (تاریخ میلادی ISO، فعال بودن تبریک) یا None
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        row = conn.execute('SELECT start_date, notify FROM clean_dates WHERE user_id = ?', (user_id,)).fetchone()
+        conn.close()
+        return (row[0], int(row[1] if row[1] is not None else 1)) if row and row[0] else None
+    except Exception as e:
+        log(f"get_clean_date error: {e!r}")
+        return None
+
+def set_clean_date(user_id, iso_date: str):
+    old = get_clean_date(user_id)
+    notify = old[1] if old else 1
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('INSERT OR REPLACE INTO clean_dates (user_id, start_date, notify, last_sent) VALUES (?, ?, ?, NULL)',
+                 (user_id, iso_date, notify))
+    conn.commit()
+    conn.close()
+
+def delete_clean_date(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('DELETE FROM clean_dates WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+
+def toggle_clean_notify(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('UPDATE clean_dates SET notify = 1 - COALESCE(notify, 1) WHERE user_id = ?', (user_id,))
+    conn.commit()
+    conn.close()
+
+def list_notify_users():
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        rows = conn.execute('SELECT user_id, start_date, last_sent FROM clean_dates WHERE notify = 1').fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        log(f"list_notify_users error: {e!r}")
+        return []
+
+def mark_clean_sent(user_id, iso_day: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute('UPDATE clean_dates SET last_sent = ? WHERE user_id = ?', (iso_day, user_id))
+    conn.commit()
+    conn.close()
+
+def get_saved_count() -> int:
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        n = conn.execute('SELECT COUNT(*) FROM clean_dates').fetchone()[0]
+        conn.close()
+        return n
+    except Exception:
+        return 0
+
 # =========================================================
 # متن‌ها (فارسی / English)
 # =========================================================
@@ -264,7 +404,10 @@ STR = {
             "📖 راهنمای ربات\n\n"
             "💻 جلسات آنلاین: فهرست جلسات زوم با روز، ساعت و لینک ورود.\n\n"
             "🔍 جلسات حضوری: لوکیشن یا نام شهرتان را بفرستید تا نزدیک‌ترین جلسات با آدرس و لینک مسیریابی نمایش داده شود (داخل و خارج ایران).\n\n"
-            "📊 روزشمار پاکی: تاریخ شروع پاکی را انتخاب کنید تا مدت پاکی‌تان به سال، ماه و روز محاسبه شود.\n\n"
+            "📊 روزشمار پاکی: تاریخ شروع پاکی را انتخاب کنید تا مدت پاکی‌تان به سال، ماه و روز محاسبه شود. "
+            "با دکمه «💾 ذخیره» می‌توانید تاریخ را نگه دارید؛ دفعه بعد مدت پاکی مستقیم نمایش داده می‌شود "
+            "و در ۳۰، ۶۰، ۹۰، ۱۸۰ و ۲۷۰ روزگی و هر سالگرد پیام تبریک می‌گیرید. "
+            "پیام تبریک قابل خاموش شدن و تاریخ قابل حذف است.\n\n"
             "🌿 پیام امید امروز: متن «فقط برای امروز».\n\n"
             "🌐 شوراهای فرامنطقه (ایران، APF، EDM): باز کردن وب‌سایت رسمی هر شورا.\n\n"
             "✉️ ارتباط با کنفرانس خدمات جهانی: ارسال ایمیل به بخش‌های مختلف NA.\n\n"
@@ -272,6 +415,7 @@ STR = {
             "🤫 ارسال پیام به سازنده: نظر یا مشکل خود را بنویسید؛ پاسخ را همین‌جا می‌گیرید.\n\n"
             "🤖 گفتگوی هوشمند: درباره NA و بهبودی سوال بپرسید، با متن یا ویس (با ویس، جواب صوتی هم می‌گیرید).\n\n"
             "🌐 زبان: تغییر بین فارسی و English.\n\n"
+            "📢 اطلاعیه‌ها: گاهی ممکن است مدیر ربات خبر یا اطلاعیه مهمی برای همه کاربران بفرستد.\n\n"
             "برای بازگشت به منو در هر بخش، /start را بزنید."
         ),
         "back": "🔙 بازگشت به منوی اصلی",
@@ -368,6 +512,18 @@ STR = {
         ),
         "first_day": "امروز اولین روز شماست",
         "clean_err": "❌ خطایی رخ داد. لطفاً دوباره از منو «📊 روزشمار پاکی» را بزنید.",
+        "clean_save": "💾 ذخیره تاریخ پاکی من",
+        "clean_saved": (
+            "✅ تاریخ پاکی شما ذخیره شد.\n"
+            "از این به بعد با زدن «📊 روزشمار پاکی» مدت پاکی‌تان را مستقیم می‌بینید و "
+            "در روزهای ۳۰، ۶۰، ۹۰، ۱۸۰، ۲۷۰ و هر سالگرد پیام تبریک می‌گیرید. 🌱"
+        ),
+        "clean_deleted": "✅ تاریخ ذخیره‌شده شما حذف شد.",
+        "clean_change": "✏️ تغییر تاریخ",
+        "clean_delete": "🗑 حذف تاریخ ذخیره‌شده",
+        "clean_notify_on": "🔔 پیام تبریک: روشن",
+        "clean_notify_off": "🔕 پیام تبریک: خاموش",
+        "milestone": "🎉 تبریک! امروز {what} پاکی شماست.\n\nهر روز پاکی یک پیروزی است. 🌱🙏",
     },
     "en": {
         "lang_prompt": "🌐 Select Language\nانتخاب زبان",
@@ -398,7 +554,9 @@ STR = {
             "📖 Bot guide\n\n"
             "💻 Online meetings: list of Zoom meetings with day, time and join link.\n\n"
             "🔍 In-person meetings: send your location or city name to get the nearest meetings with address and map link (in and outside Iran).\n\n"
-            "📊 Clean time counter: pick your clean date to see your clean time in years, months and days.\n\n"
+            "📊 Clean time counter: pick your clean date to see your clean time in years, months and days. "
+            "Tap “💾 Save” to keep the date; next time your clean time shows right away, and you'll get a congratulation "
+            "message on day 30, 60, 90, 180, 270 and every anniversary. Congratulations can be turned off and the date deleted.\n\n"
             "🌿 Message of hope: today's “Just For Today” reading.\n\n"
             "🌐 Regional councils (Iran, APF, EDM): open each council's official website.\n\n"
             "✉️ Contact NA World Services: email the different NA departments.\n\n"
@@ -406,6 +564,7 @@ STR = {
             "🤫 Message the developer: send feedback or report a problem; you'll get the reply here.\n\n"
             "🤖 Smart assistant: ask about NA and recovery by text or voice (voice gets a voice reply).\n\n"
             "🌐 Language: switch between فارسی and English.\n\n"
+            "📢 Announcements: the bot admin may occasionally send an important notice to all users.\n\n"
             "Send /start at any time to return to the menu."
         ),
         "back": "🔙 Back to main menu",
@@ -502,6 +661,18 @@ STR = {
         ),
         "first_day": "Today is your first day",
         "clean_err": "❌ Something went wrong. Please tap “📊 Clean time counter” in the menu again.",
+        "clean_save": "💾 Save my clean date",
+        "clean_saved": (
+            "✅ Your clean date was saved.\n"
+            "From now on, “📊 Clean time counter” shows your clean time right away, and "
+            "you'll get a congratulation message on day 30, 60, 90, 180, 270 and every anniversary. 🌱"
+        ),
+        "clean_deleted": "✅ Your saved date was deleted.",
+        "clean_change": "✏️ Change date",
+        "clean_delete": "🗑 Delete saved date",
+        "clean_notify_on": "🔔 Congratulations: on",
+        "clean_notify_off": "🔕 Congratulations: off",
+        "milestone": "🎉 Congratulations! Today is {what} of your clean time.\n\nEvery clean day is a victory. 🌱🙏",
     },
 }
 
@@ -646,17 +817,35 @@ async def lang_menu_handler(callback: CallbackQuery):
     except Exception:
         await callback.message.answer(STR["fa"]["lang_prompt"], reply_markup=lang_markup())
 
+FEATURE_LABELS = {
+    "online": "💻 جلسات آنلاین",
+    "inperson": "🔍 جلسات حضوری",
+    "clean": "📊 روزشمار پاکی",
+    "jft": "🌿 پیام امید",
+    "email": "✉️ ایمیل خدمات جهانی",
+    "admin_msg": "🤫 پیام به سازنده",
+    "ai": "🤖 گفتگوی هوشمند",
+    "help": "📖 راهنما",
+}
+
 @dp.message(Command("stats"))
 async def stats_handler(message: Message):
     user = message.from_user
     if user and str(user.id) == str(ADMIN_ID):
         count = get_user_count()
         msg_count = get_message_count()
-        await message.answer(
-            f"📊 آمار ربات:\n\n"
-            f"👥 تعداد کل اعضای ربات: **{count}** نفر\n"
-            f"📩 تعداد پیام‌های دریافتی: **{msg_count}**"
-        )
+        usage = get_usage()
+        lines = [
+            "📊 آمار ربات:\n",
+            f"👥 تعداد کل اعضای ربات: {count} نفر",
+            f"📩 تعداد پیام‌های دریافتی: {msg_count}",
+            f"💾 تاریخ‌های پاکی ذخیره‌شده: {get_saved_count()}",
+            "\n📈 استفاده از بخش‌ها (امروز / کل):",
+        ]
+        for key, label in FEATURE_LABELS.items():
+            today_n, total_n = usage.get(key, (0, 0))
+            lines.append(f"{label}: {today_n} / {total_n}")
+        await message.answer("\n".join(lines))
 
 @dp.message(Command("messages"))
 async def messages_handler(message: Message):
@@ -851,6 +1040,7 @@ def jft_markup(lang: str = DEFAULT_LANG):
 @dp.callback_query(F.data == "menu_jft")
 async def jft_handler(callback: CallbackQuery):
     lang = get_lang(callback.from_user.id)
+    track("jft")
     await callback.answer()
     try:
         text, translated = await fetch_jft_localized(lang)
@@ -862,11 +1052,7 @@ async def jft_handler(callback: CallbackQuery):
         log(f"JFT error: {e!r}")
         traceback.print_exc()
         # گزارش علت خطا برای ادمین
-        if ADMIN_ID:
-            try:
-                await bot.send_message(chat_id=int(ADMIN_ID), text=f"🛠 خطای پیام امید امروز:\n{type(e).__name__}: {e}"[:3500])
-            except Exception:
-                pass
+        await report_admin(f"🛠 خطای پیام امید امروز:\n{type(e).__name__}: {e}")
         await callback.message.answer(T(lang, "jft_fail"), reply_markup=jft_markup(lang))
 
 @dp.message(Command("testjft"))
@@ -1428,6 +1614,7 @@ async def fetch_online() -> str:
 @dp.callback_query(F.data == "menu_online")
 async def online_handler(callback: CallbackQuery):
     lang = get_lang(callback.from_user.id)
+    track("online")
     await callback.answer()
     try:
         text = await fetch_online()
@@ -1450,11 +1637,7 @@ async def online_handler(callback: CallbackQuery):
     except Exception as e:
         log(f"Online meetings error: {e!r}")
         traceback.print_exc()
-        if ADMIN_ID:
-            try:
-                await bot.send_message(chat_id=int(ADMIN_ID), text=f"🛠 خطای جلسات آنلاین:\n{type(e).__name__}: {e}"[:3500])
-            except Exception:
-                pass
+        await report_admin(f"🛠 خطای جلسات آنلاین:\n{type(e).__name__}: {e}")
         await callback.message.answer(T(lang, "online_fail"), reply_markup=jft_markup(lang))
 
 @dp.message(Command("testonline"))
@@ -1484,6 +1667,7 @@ async def back_to_main_handler(callback: CallbackQuery):
 @dp.callback_query(F.data == "menu_email")
 async def email_menu_handler(callback: CallbackQuery):
     lang = get_lang(callback.from_user.id)
+    track("email")
     try:
         await callback.message.edit_text(T(lang, "email_text"), reply_markup=email_inline_keyboard(lang).as_markup())
     except Exception:
@@ -1493,6 +1677,7 @@ async def email_menu_handler(callback: CallbackQuery):
 @dp.callback_query(F.data == "menu_admin_msg")
 async def admin_msg_menu_handler(callback: CallbackQuery):
     lang = get_lang(callback.from_user.id)
+    track("admin_msg")
     user_states[callback.from_user.id] = "waiting_for_admin_msg"
     await callback.message.answer(T(lang, "admin_msg_prompt"))
     await callback.answer()
@@ -1500,6 +1685,7 @@ async def admin_msg_menu_handler(callback: CallbackQuery):
 @dp.callback_query(F.data == "menu_ai")
 async def ai_menu_handler(callback: CallbackQuery):
     user_id = callback.from_user.id
+    track("ai")
     lang = get_lang(user_id)
     user_states[user_id] = "waiting_for_ai"
     ai_chat_history[user_id] = [{"role": "system", "content": system_prompt(lang)}]
@@ -1509,6 +1695,7 @@ async def ai_menu_handler(callback: CallbackQuery):
 @dp.callback_query(F.data == "menu_help")
 async def help_menu_handler(callback: CallbackQuery):
     lang = get_lang(callback.from_user.id)
+    track("help")
     user_states.pop(callback.from_user.id, None)
     await callback.answer()
     kb = InlineKeyboardBuilder()
@@ -1521,7 +1708,8 @@ async def help_menu_handler(callback: CallbackQuery):
 
 # ----- توابع کمکی هوش مصنوعی و صوت -----
 async def report_admin(text: str):
-    """گزارش خطا برای ادمین (برای عیب‌یابی)."""
+    """گزارش خطا برای ادمین (برای عیب‌یابی) + ذخیره در لاگ خطاها."""
+    save_error(text)
     if ADMIN_ID:
         try:
             await bot.send_message(chat_id=int(ADMIN_ID), text=text[:3500])
@@ -2410,6 +2598,7 @@ async def inperson_by_text(message, lang: str, query: str):
 @dp.callback_query(F.data == "menu_inperson")
 async def inperson_menu_handler(callback: CallbackQuery):
     lang = get_lang(callback.from_user.id)
+    track("inperson")
     user_states[callback.from_user.id] = "waiting_for_location"
     await callback.answer()
     text = T(lang, "inperson_intro")
@@ -2694,6 +2883,11 @@ async def _clean_show(callback: CallbackQuery, text: str, markup):
 async def clean_menu_handler(callback: CallbackQuery):
     lang = get_lang(callback.from_user.id)
     await callback.answer()
+    track("clean")
+    saved = get_clean_date(callback.from_user.id)
+    if saved:
+        await _clean_show_saved(callback, lang, saved)
+        return
     await _clean_show(callback, T(lang, "clean_title"), _clean_years_markup(lang, 0))
 
 @dp.callback_query(F.data.startswith("cc_"))
@@ -2716,6 +2910,9 @@ async def clean_callback_handler(callback: CallbackQuery):
         elif kind == "d":
             y, m, d = int(p[2]), int(p[3]), int(p[4])
             kb = InlineKeyboardBuilder()
+            if clean_time(lang, y, m, d) is not None:
+                gy, gm, gd = cal_to_greg(lang, y, m, d)
+                kb.button(text=T(lang, "clean_save"), callback_data=f"sv_s_{gy}_{gm}_{gd}")
             kb.button(text=T(lang, "recalc"), callback_data="cc_yp_0")
             kb.button(text=T(lang, "back"), callback_data="back_to_main")
             kb.adjust(1)
@@ -2723,6 +2920,195 @@ async def clean_callback_handler(callback: CallbackQuery):
     except Exception:
         traceback.print_exc()
         await callback.message.answer(T(lang, "clean_err"), reply_markup=main_markup(lang))
+
+# ----- ذخیره تاریخ پاکی و پیام تبریک -----
+MILESTONE_HOUR = int(os.getenv("MILESTONE_HOUR", "8"))    # ساعت ارسال پیام تبریک (وقت ایران)
+MILESTONE_DAYS = (30, 60, 90, 180, 270)
+
+def _iran_now():
+    return datetime.now(timezone(timedelta(hours=3, minutes=30)))
+
+def greg_to_cal(lang: str, g):
+    if lang == "fa":
+        return gregorian_to_jalali(g.year, g.month, g.day)
+    return (g.year, g.month, g.day)
+
+def _saved_markup(lang: str, notify: int):
+    kb = InlineKeyboardBuilder()
+    kb.button(text=T(lang, "clean_notify_on" if notify else "clean_notify_off"), callback_data="sv_notify")
+    kb.button(text=T(lang, "clean_change"), callback_data="cc_yp_0")
+    kb.button(text=T(lang, "clean_delete"), callback_data="sv_del")
+    kb.button(text=T(lang, "back"), callback_data="back_to_main")
+    kb.adjust(1)
+    return kb.as_markup()
+
+async def _clean_show_saved(callback: CallbackQuery, lang: str, saved):
+    iso, notify = saved
+    try:
+        g = date.fromisoformat(iso)
+    except Exception:
+        delete_clean_date(callback.from_user.id)
+        await _clean_show(callback, T(lang, "clean_title"), _clean_years_markup(lang, 0))
+        return
+    y, m, d = greg_to_cal(lang, g)
+    await _clean_show(callback, clean_result_text(lang, y, m, d), _saved_markup(lang, notify))
+
+@dp.callback_query(F.data.startswith("sv_"))
+async def clean_save_handler(callback: CallbackQuery):
+    uid = callback.from_user.id
+    lang = get_lang(uid)
+    await callback.answer()
+    try:
+        p = callback.data.split("_")
+        kind = p[1]
+        if kind == "s":
+            g = date(int(p[2]), int(p[3]), int(p[4]))
+            if g > _iran_now().date():
+                await _clean_show(callback, T(lang, "clean_future"), _clean_years_markup(lang, 0))
+                return
+            set_clean_date(uid, g.isoformat())
+            await _clean_show_saved(callback, lang, get_clean_date(uid))
+            await callback.message.answer(T(lang, "clean_saved"))
+        elif kind == "del":
+            delete_clean_date(uid)
+            await _clean_show(callback, T(lang, "clean_deleted"), jft_markup(lang))
+        elif kind == "notify":
+            toggle_clean_notify(uid)
+            saved = get_clean_date(uid)
+            if saved:
+                await _clean_show_saved(callback, lang, saved)
+    except Exception:
+        traceback.print_exc()
+        await callback.message.answer(T(lang, "clean_err"), reply_markup=main_markup(lang))
+
+def milestone_for(start, today):
+    """اگر امروز روز تبریک است: ('days', n) یا ('years', n)؛ وگرنه None."""
+    total = (today - start).days
+    if total in MILESTONE_DAYS:
+        return ("days", total)
+    years = today.year - start.year
+    if years >= 1:
+        am, ad = start.month, start.day
+        if (am, ad) == (2, 29) and not calendar.isleap(today.year):
+            ad = 28
+        if (today.month, today.day) == (am, ad):
+            return ("years", years)
+    return None
+
+def milestone_text(lang: str, kind: str, n: int) -> str:
+    if lang == "fa":
+        what = f"{fa_num(n)} {'روز' if kind == 'days' else 'سال'}"
+    else:
+        what = f"{n} {'day' if kind == 'days' else 'year'}" + ("" if n == 1 else "s")
+    return T(lang, "milestone", what=what)
+
+async def milestone_loop():
+    """هر ساعت بررسی می‌کند؛ بعد از ساعت MILESTONE_HOUR (وقت ایران) به کاربرانِ روز تبریک پیام می‌دهد."""
+    await asyncio.sleep(20)
+    while True:
+        try:
+            now = _iran_now()
+            if now.hour >= MILESTONE_HOUR:
+                today = now.date()
+                iso = today.isoformat()
+                for uid, start_iso, last_sent in list_notify_users():
+                    if last_sent == iso:
+                        continue
+                    try:
+                        start = date.fromisoformat(start_iso)
+                    except Exception:
+                        continue
+                    ms = milestone_for(start, today)
+                    if not ms:
+                        continue
+                    try:
+                        await bot.send_message(chat_id=uid, text=milestone_text(get_lang(uid), ms[0], ms[1]))
+                        mark_clean_sent(uid, iso)
+                    except Exception as e:
+                        log(f"Milestone send error {uid}: {e!r}")
+                    await asyncio.sleep(0.1)
+        except Exception:
+            traceback.print_exc()
+        await asyncio.sleep(3600)
+
+# ----- پنل ادمین: پیام همگانی، لاگ خطاها، راهنما -----
+_pending_broadcast = {}
+_bg_tasks = set()
+
+def _is_admin(message_or_cb) -> bool:
+    u = getattr(message_or_cb, "from_user", None)
+    return bool(u) and str(u.id) == str(ADMIN_ID)
+
+@dp.message(Command("adminhelp"))
+async def admin_help_handler(message: Message):
+    if not _is_admin(message):
+        return
+    await message.answer(
+        "🛠 دستورهای ادمین:\n\n"
+        "/stats — آمار اعضا، پیام‌ها و استفاده از هر بخش\n"
+        "/messages — آخرین پیام‌های کاربران\n"
+        "/reply USER_ID متن — پاسخ به یک کاربر\n"
+        "/broadcast متن — پیام همگانی (قبل از ارسال پیش‌نمایش و تأیید دارد)\n"
+        "/errors — آخرین خطاهای ثبت‌شده\n"
+        "/testai /testjft /testonline /testlocal — آزمایش بخش‌ها"
+    )
+
+@dp.message(Command("broadcast"))
+async def broadcast_handler(message: Message):
+    if not _is_admin(message):
+        return
+    parts = (message.text or "").split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer("فرمت: /broadcast متن اطلاعیه")
+        return
+    text = parts[1].strip()
+    _pending_broadcast[message.from_user.id] = text
+    kb = InlineKeyboardBuilder()
+    kb.button(text=f"✅ ارسال به {get_user_count()} نفر", callback_data="bc_yes")
+    kb.button(text="❌ لغو", callback_data="bc_no")
+    kb.adjust(1)
+    await message.answer("📢 پیش‌نمایش اطلاعیه:\n\n" + text + "\n\nآیا ارسال شود؟", reply_markup=kb.as_markup())
+
+async def _do_broadcast(admin_chat_id: int, text: str):
+    ok = fail = 0
+    for uid in get_all_user_ids():
+        try:
+            await bot.send_message(chat_id=uid, text="📢 " + text)
+            ok += 1
+        except Exception:
+            fail += 1
+        await asyncio.sleep(0.05)
+    try:
+        await bot.send_message(chat_id=admin_chat_id, text=f"✅ پیام همگانی تمام شد.\nموفق: {ok} | ناموفق: {fail}")
+    except Exception:
+        pass
+
+@dp.callback_query(F.data.in_({"bc_yes", "bc_no"}))
+async def broadcast_confirm_handler(callback: CallbackQuery):
+    if not _is_admin(callback):
+        await callback.answer()
+        return
+    await callback.answer()
+    text = _pending_broadcast.pop(callback.from_user.id, None)
+    if callback.data == "bc_no" or not text:
+        await callback.message.answer("❌ ارسال لغو شد." if callback.data == "bc_no" else "⚠️ اطلاعیه‌ای در انتظار نیست؛ دوباره /broadcast بزنید.")
+        return
+    await callback.message.answer("⏳ ارسال شروع شد؛ پس از پایان گزارش می‌دهم.")
+    task = asyncio.create_task(_do_broadcast(callback.from_user.id, text))
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
+@dp.message(Command("errors"))
+async def errors_handler(message: Message):
+    if not _is_admin(message):
+        return
+    rows = get_last_errors(10)
+    if not rows:
+        await message.answer("✅ خطایی ثبت نشده است.")
+        return
+    body = "\n\n------\n\n".join(f"#{i} | {t}\n{e}" for i, t, e in rows)
+    for chunk in split_text("🛠 آخرین خطاها:\n\n" + body, 3500):
+        await message.answer(chunk)
 
 @dp.message(Command("testai"))
 async def test_ai_handler(message: Message):
@@ -2763,6 +3149,9 @@ async def test_ai_handler(message: Message):
 # =========================================================
 async def main():
     log("✅ ربات بله با موفقیت اجرا شد.")
+    bg = asyncio.create_task(milestone_loop())
+    _bg_tasks.add(bg)
+    bg.add_done_callback(_bg_tasks.discard)
     try:
         await dp.start_polling(bot)
     except Exception:
