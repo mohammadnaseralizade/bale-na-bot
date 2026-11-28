@@ -259,6 +259,21 @@ STR = {
         "btn_wso_iran": "📧 دفتر خدمات جهانی NA ایران",
         "btn_admin_msg": "🤫 ارسال پیام به سازنده",
         "btn_ai": "🤖 گفتگوی هوشمند",
+        "btn_help": "📖 راهنمای ربات",
+        "help_text": (
+            "📖 راهنمای ربات\n\n"
+            "💻 جلسات آنلاین: فهرست جلسات زوم با روز، ساعت و لینک ورود.\n\n"
+            "🔍 جلسات حضوری: لوکیشن یا نام شهرتان را بفرستید تا نزدیک‌ترین جلسات با آدرس و لینک مسیریابی نمایش داده شود (داخل و خارج ایران).\n\n"
+            "📊 روزشمار پاکی: تاریخ شروع پاکی را انتخاب کنید تا مدت پاکی‌تان به سال، ماه و روز محاسبه شود.\n\n"
+            "🌿 پیام امید امروز: متن «فقط برای امروز».\n\n"
+            "🌐 شوراهای فرامنطقه (ایران، APF، EDM): باز کردن وب‌سایت رسمی هر شورا.\n\n"
+            "✉️ ارتباط با کنفرانس خدمات جهانی: ارسال ایمیل به بخش‌های مختلف NA.\n\n"
+            "📧 دفتر خدمات جهانی NA ایران: ارسال ایمیل به دفتر ایران.\n\n"
+            "🤫 ارسال پیام به سازنده: نظر یا مشکل خود را بنویسید؛ پاسخ را همین‌جا می‌گیرید.\n\n"
+            "🤖 گفتگوی هوشمند: درباره NA و بهبودی سوال بپرسید، با متن یا ویس (با ویس، جواب صوتی هم می‌گیرید).\n\n"
+            "🌐 زبان: تغییر بین فارسی و English.\n\n"
+            "برای بازگشت به منو در هر بخش، /start را بزنید."
+        ),
         "back": "🔙 بازگشت به منوی اصلی",
         "em_general": "اطلاعات عمومی و فلووشیپ",
         "em_customer": "خدمات مشتری (سفارشات)",
@@ -378,6 +393,21 @@ STR = {
         "btn_wso_iran": "📧 NA Iran Service Office",
         "btn_admin_msg": "🤫 Message the developer",
         "btn_ai": "🤖 Smart assistant",
+        "btn_help": "📖 Bot guide",
+        "help_text": (
+            "📖 Bot guide\n\n"
+            "💻 Online meetings: list of Zoom meetings with day, time and join link.\n\n"
+            "🔍 In-person meetings: send your location or city name to get the nearest meetings with address and map link (in and outside Iran).\n\n"
+            "📊 Clean time counter: pick your clean date to see your clean time in years, months and days.\n\n"
+            "🌿 Message of hope: today's “Just For Today” reading.\n\n"
+            "🌐 Regional councils (Iran, APF, EDM): open each council's official website.\n\n"
+            "✉️ Contact NA World Services: email the different NA departments.\n\n"
+            "📧 NA Iran Service Office: email the Iran office.\n\n"
+            "🤫 Message the developer: send feedback or report a problem; you'll get the reply here.\n\n"
+            "🤖 Smart assistant: ask about NA and recovery by text or voice (voice gets a voice reply).\n\n"
+            "🌐 Language: switch between فارسی and English.\n\n"
+            "Send /start at any time to return to the menu."
+        ),
         "back": "🔙 Back to main menu",
         "em_general": "General info & Fellowship",
         "em_customer": "Customer service (orders)",
@@ -537,6 +567,7 @@ def main_inline_keyboard(lang: str) -> InlineKeyboardBuilder:
     kb.button(text=T(lang, "btn_wso_iran"), url="mailto:info@wsoiran.org")
     kb.button(text=T(lang, "btn_admin_msg"), callback_data="menu_admin_msg")
     kb.button(text=T(lang, "btn_ai"), callback_data="menu_ai")
+    kb.button(text=T(lang, "btn_help"), callback_data="menu_help")
     kb.button(text=T(lang, "btn_lang"), callback_data="menu_lang")
     kb.adjust(1)
     return kb
@@ -1474,6 +1505,19 @@ async def ai_menu_handler(callback: CallbackQuery):
     ai_chat_history[user_id] = [{"role": "system", "content": system_prompt(lang)}]
     await callback.message.answer(T(lang, "ai_intro"))
     await callback.answer()
+
+@dp.callback_query(F.data == "menu_help")
+async def help_menu_handler(callback: CallbackQuery):
+    lang = get_lang(callback.from_user.id)
+    user_states.pop(callback.from_user.id, None)
+    await callback.answer()
+    kb = InlineKeyboardBuilder()
+    kb.button(text=T(lang, "back"), callback_data="back_to_main")
+    kb.adjust(1)
+    try:
+        await callback.message.edit_text(T(lang, "help_text"), reply_markup=kb.as_markup())
+    except Exception:
+        await callback.message.answer(T(lang, "help_text"), reply_markup=kb.as_markup())
 
 # ----- توابع کمکی هوش مصنوعی و صوت -----
 async def report_admin(text: str):
