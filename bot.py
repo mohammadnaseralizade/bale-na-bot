@@ -395,6 +395,7 @@ STR = {
         "btn_iran_council": "🌐 شورای فرامنطقه ایران",
         "btn_apf": "🌐 شورای فرامنطقه APF",
         "btn_edm": "🌐 شورای فرامنطقه EDM",
+        "btn_na_site": "🌐 سایت کنفرانس خدمات جهانی NA",
         "btn_email": "✉️ ارتباط با کنفرانس خدمات جهانی NA",
         "btn_wso_iran": "📧 دفتر خدمات جهانی NA ایران",
         "btn_admin_msg": "🤫 ارسال پیام به سازنده",
@@ -410,6 +411,7 @@ STR = {
             "پیام تبریک قابل خاموش شدن و تاریخ قابل حذف است.\n\n"
             "🌿 پیام امید امروز: متن «فقط برای امروز».\n\n"
             "🌐 شوراهای فرامنطقه (ایران، APF، EDM): باز کردن وب‌سایت رسمی هر شورا.\n\n"
+            "🌐 سایت کنفرانس خدمات جهانی NA: باز کردن وب‌سایت رسمی na.org.\n\n"
             "✉️ ارتباط با کنفرانس خدمات جهانی: ارسال ایمیل به بخش‌های مختلف NA.\n\n"
             "📧 دفتر خدمات جهانی NA ایران: ارسال ایمیل به دفتر ایران.\n\n"
             "🤫 ارسال پیام به سازنده: نظر یا مشکل خود را بنویسید؛ پاسخ را همین‌جا می‌گیرید.\n\n"
@@ -545,6 +547,7 @@ STR = {
         "btn_iran_council": "🌐 NA Iran Regional Council",
         "btn_apf": "🌐 APF Regional Council",
         "btn_edm": "🌐 EDM Regional Council",
+        "btn_na_site": "🌐 NA World Services Website",
         "btn_email": "✉️ Contact NA World Services",
         "btn_wso_iran": "📧 NA Iran Service Office",
         "btn_admin_msg": "🤫 Message the developer",
@@ -559,6 +562,7 @@ STR = {
             "message on day 30, 60, 90, 180, 270 and every anniversary. Congratulations can be turned off and the date deleted.\n\n"
             "🌿 Message of hope: today's “Just For Today” reading.\n\n"
             "🌐 Regional councils (Iran, APF, EDM): open each council's official website.\n\n"
+            "🌐 NA World Services website: open the official na.org website.\n\n"
             "✉️ Contact NA World Services: email the different NA departments.\n\n"
             "📧 NA Iran Service Office: email the Iran office.\n\n"
             "🤫 Message the developer: send feedback or report a problem; you'll get the reply here.\n\n"
@@ -733,6 +737,8 @@ def main_inline_keyboard(lang: str) -> InlineKeyboardBuilder:
     kb.button(text=T(lang, "btn_iran_council"), url="https://nairan.org/fa")
     kb.button(text=T(lang, "btn_apf"), url="https://fa.apfna.org/farsi-home")
     kb.button(text=T(lang, "btn_edm"), url="https://edmna.org/")
+    # سایت کنفرانس خدمات جهانی NA: مستقیم لینک را باز می‌کند
+    kb.button(text=T(lang, "btn_na_site"), url="https://na.org/")
     # بقیه دکمه‌ها
     kb.button(text=T(lang, "btn_email"), callback_data="menu_email")
     kb.button(text=T(lang, "btn_wso_iran"), url="mailto:info@wsoiran.org")
